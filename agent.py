@@ -132,7 +132,7 @@ def build_template_sentence(result: Dict[str, Any]) -> str:
         return f"Order {order_id} by {user} exhibits suspicious shared connections with {len(ring_members)} other accounts."
 
 
-def _run_deterministic_pipeline(order_id: str, analyst_id: str) -> Dict[str, Any]:
+def _run_deterministic_pipeline(order_id: str, analyst_id: str, has_memory: bool = False) -> Dict[str, Any]:
     """Execute the deterministic pipeline with tools in a fixed order."""
     traces = []
     known_ids = {order_id}
@@ -159,9 +159,9 @@ def _run_deterministic_pipeline(order_id: str, analyst_id: str) -> Dict[str, Any
     ring_members = dr_res["data"].get("members", [])
     known_ids.update(ring_members)
 
-    # 4. explain_path (for path evidence)
+    # 4. explain_path (skipped if memory already confirmed the fraud ring)
     path_evidence = []
-    if ring_members:
+    if ring_members and not has_memory:
         target_member = ring_members[-1]
         ep_res = tools.explain_path(order_user, target_member)
         traces.append(ep_res["trace"])
@@ -276,11 +276,20 @@ def _run_llm_pipeline(order_id: str, analyst_id: str, initial_data: Dict[str, An
         ),
     )
 
-    prompt = (
-        f"Investigate suspected fraud for order {order_id} placed by {order_user}. "
-        "Use detect_ring and explain_path to discover connected ring members and evidence. "
-        "Conclude with ONE short sentence explaining the findings using only observed IDs."
-    )
+    has_mem = initial_data.get("has_memory")
+    if has_mem:
+        prompt = (
+            f"Investigate order {order_id} placed by {order_user}. "
+            "Note: Past confirmed fraud cases already exist in memory for this entity ring. "
+            "Verify group stats with ring_stats and summarize concisely without redundant path explorations. "
+            "Conclude with ONE short sentence explaining the findings using only observed IDs."
+        )
+    else:
+        prompt = (
+            f"Investigate suspected fraud for order {order_id} placed by {order_user}. "
+            "Use detect_ring and explain_path to discover connected ring members and evidence. "
+            "Conclude with ONE short sentence explaining the findings using only observed IDs."
+        )
 
     resp = chat.send_message(prompt)
     sentence = resp.text.strip() if resp and resp.text else ""
@@ -357,6 +366,12 @@ def investigate(
     if f_res["data"].get("shipping_address"):
         initial_known_ids.add(f_res["data"]["shipping_address"])
 
+    has_memory = bool(
+        recall_result
+        and recall_result.get("outcome") == "answered_from_memory"
+        and len(recall_result.get("cases", [])) > 0
+    )
+
     initial_data = {
         "order_user": order_user,
         "ring_members": linked_users,
@@ -365,15 +380,35 @@ def investigate(
         "path_evidence": [],
         "traces": initial_traces,
         "known_ids": initial_known_ids,
+        "has_memory": has_memory,
+        "recall_result": recall_result,
     }
 
-    # Step 1b & 3: Run LLM tool calling loop with retry and deterministic fallback
     pipeline_data = None
     raw_sentence = ""
     sentence_source = "fallback"
     tool_call_count = len(initial_traces)
 
-    if use_llm and os.getenv("GEMINI_API_KEY"):
+    # Fast-path: if no linked accounts and no memory, check detect_ring directly to avoid unnecessary LLM latency
+    if not linked_users and not shared_entities and not has_memory:
+        dr_res = tools.detect_ring(order_user, max_hops=12)
+        initial_traces.append(dr_res["trace"])
+        if not dr_res["data"].get("members"):
+            pipeline_data = {
+                "order_user": order_user,
+                "ring_members": [],
+                "direct_shared": [],
+                "shared_kinds": [],
+                "path_evidence": [],
+                "ring_stats": {"order_count": 1, "flagged_count": 0, "total_amount": f_res["data"]["amount"], "connecting_entity_kinds": []},
+                "traces": initial_traces,
+                "known_ids": initial_known_ids,
+            }
+            tool_call_count = len(initial_traces)
+            sentence_source = "fallback"
+
+    # Step 1b & 3: Run LLM tool calling loop with retry and deterministic fallback
+    if pipeline_data is None and use_llm and os.getenv("GEMINI_API_KEY"):
         # Retry with backoff up to 2 retries
         for attempt in range(3):
             try:
@@ -390,7 +425,7 @@ def investigate(
 
     if pipeline_data is None:
         # Fallback deterministic pipeline
-        det_data = _run_deterministic_pipeline(order_id, analyst_id)
+        det_data = _run_deterministic_pipeline(order_id, analyst_id, has_memory=has_memory)
         pipeline_data = det_data
         tool_call_count = len(det_data["traces"])
         sentence_source = "fallback"

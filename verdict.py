@@ -107,8 +107,27 @@ def verdict(
         reasons.append(f"Shared payment card detected (+{SCORE_CARD_SHARED})")
 
     if "Address" in kinds_set:
-        score += SCORE_ADDRESS_SHARED
-        reasons.append(f"Shared shipping address detected (+{SCORE_ADDRESS_SHARED})")
+        # Count a shared Address only when >= 3 ring members use it
+        addr_members = int(stats.get("address_member_count", stats.get("address_users_count", 0)))
+        if addr_members == 0 and "user_ids" in stats and stats["user_ids"]:
+            try:
+                import db as db_module
+                g = db_module.get_db("fraud")
+                q = (
+                    "MATCH (u:User)-[:PLACED]->(:Order)-[:SHIPPED_TO]->(a:Address) "
+                    "WHERE u.id IN $uids "
+                    "WITH a, count(DISTINCT u.id) AS u_cnt "
+                    "WHERE u_cnt >= 3 "
+                    "RETURN max(u_cnt) AS max_m"
+                )
+                r = g.ro_query(q, {"uids": list(stats["user_ids"])})
+                if r.result_set and r.result_set[0][0]:
+                    addr_members = int(r.result_set[0][0])
+            except Exception:
+                pass
+        if addr_members >= 3:
+            score += SCORE_ADDRESS_SHARED
+            reasons.append(f"Shared shipping address detected (+{SCORE_ADDRESS_SHARED})")
 
     # 3. Flagged share of the ring's orders
     order_count = int(stats.get("order_count", 0))
@@ -157,7 +176,12 @@ def verdict(
         reasons.append(f"Overlapping REJECTED past case: {cid} on {cdate} ({SCORE_REJECTED_CASE_PENALTY})")
 
     # Cap score at [SCORE_MIN, SCORE_MAX]
-    final_score = min(SCORE_MAX, max(SCORE_MIN, score))
+    raw_score = score
+    final_score = min(SCORE_MAX, max(SCORE_MIN, raw_score))
+    if raw_score > SCORE_MAX:
+        score_display = f"{SCORE_MAX} (raw {raw_score}, capped)"
+    else:
+        score_display = str(final_score)
 
     # 6. Verdict outcome
     if final_score >= THRESHOLD_FRAUD_RING:
@@ -168,5 +192,7 @@ def verdict(
     return {
         "verdict": verdict_str,
         "confidence": final_score,
+        "raw_score": raw_score,
+        "score_display": score_display,
         "reasons": reasons,
     }

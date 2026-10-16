@@ -5,11 +5,10 @@ Connects to FalkorDB graph 'fraud' on localhost:6379.
 
 import time
 from typing import Any, Dict, List, Optional
-from falkordb import FalkorDB
+import db as db_module
 
-# Initialize FalkorDB connection and graph
-db = FalkorDB(host="localhost", port=6379)
-graph = db.select_graph("fraud")
+# Initialize FalkorDB connection and graph via centralized factory
+graph = db_module.get_db("fraud")
 
 NOT_LINKED_MSG = "No shared device or card was found (this does NOT indicate the account is safe)"
 
@@ -420,16 +419,25 @@ def ring_stats(user_ids: List[str]) -> Dict[str, Any]:
         "WITH count(DISTINCT d) AS dev_count "
         "OPTIONAL MATCH (u2:User)-[r3:PAID_WITH]->(c:Card)<-[r4:PAID_WITH]-(v2:User) "
         "WHERE u2.id IN $uids AND v2.id IN $uids AND u2 <> v2 "
-        "WITH dev_count, count(DISTINCT c) AS card_count "
-        "OPTIONAL MATCH (u3:User)-[r5:PLACED]->(o1:Order)-[r6:SHIPPED_TO]->(a:Address)<-[r7:SHIPPED_TO]-(o2:Order)<-[r8:PLACED]-(v3:User) "
-        "WHERE u3.id IN $uids AND v3.id IN $uids AND u3 <> v3 "
-        "RETURN dev_count, card_count, count(DISTINCT a) AS addr_count"
+        "RETURN dev_count, count(DISTINCT c) AS card_count"
     )
     conn_res = graph.ro_query(q_conn, {"uids": uids})
-    c_row = conn_res.result_set[0] if conn_res.result_set else [0, 0, 0]
+    c_row = conn_res.result_set[0] if conn_res.result_set else [0, 0]
     dev_count = int(c_row[0] or 0)
     card_count = int(c_row[1] or 0)
-    addr_count = int(c_row[2] or 0)
+
+    # Count shared Address only when >= 3 ring members use it
+    q_addr_count = (
+        "MATCH (u:User)-[:PLACED]->(:Order)-[:SHIPPED_TO]->(a:Address) "
+        "WHERE u.id IN $uids "
+        "WITH a, count(DISTINCT u.id) AS u_cnt "
+        "WHERE u_cnt >= 3 "
+        "RETURN count(a) AS addr_count, max(u_cnt) AS max_addr_members"
+    )
+    addr_res = graph.ro_query(q_addr_count, {"uids": uids})
+    addr_row = addr_res.result_set[0] if addr_res.result_set else [0, 0]
+    addr_count = int(addr_row[0] or 0)
+    max_addr_members = int(addr_row[1] or 0) if addr_row[1] is not None else 0
 
     connecting_kinds = []
     if dev_count > 0:
@@ -463,9 +471,12 @@ def ring_stats(user_ids: List[str]) -> Dict[str, Any]:
 
     if addr_count > 0:
         q_addr = (
-            "MATCH (u:User)-[:PLACED]->(o:Order)-[:SHIPPED_TO]->(a:Address)<-[:SHIPPED_TO]-(:Order)<-[:PLACED]-(v:User) "
-            "WHERE u.id IN $uids AND v.id IN $uids AND u <> v "
-            "RETURN DISTINCT u.id AS uid, o.id AS oid, a.id AS aid"
+            "MATCH (u:User)-[:PLACED]->(o:Order)-[:SHIPPED_TO]->(a:Address) "
+            "WHERE u.id IN $uids "
+            "WITH a, collect(DISTINCT u.id) AS users, collect(DISTINCT o.id) AS orders "
+            "WHERE size(users) >= 3 "
+            "UNWIND users AS uid "
+            "RETURN uid, orders[0], a.id"
         )
         r_addr = graph.ro_query(q_addr, {"uids": uids})
         for r in (r_addr.result_set or []):
@@ -479,6 +490,7 @@ def ring_stats(user_ids: List[str]) -> Dict[str, Any]:
         "flagged_count": flagged_count,
         "total_amount": total_amount,
         "connecting_entity_kinds": connecting_kinds,
+        "address_member_count": max_addr_members,
     }
 
     if not connecting_kinds and order_count == 0:

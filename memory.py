@@ -6,14 +6,12 @@ Manages isolated FalkorDB memory graphs per analyst: f"memory_{analyst_id}".
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
-from falkordb import FalkorDB
-
-db = FalkorDB(host="localhost", port=6379)
+import db as db_module
 
 
 def _get_analyst_graph(analyst_id: str):
     """Return the isolated FalkorDB graph for the analyst."""
-    return db.select_graph(f"memory_{analyst_id}")
+    return db_module.get_db(f"memory_{analyst_id}")
 
 
 def _normalize_entity(e: Any, default_kind: str = "Entity") -> Dict[str, str]:
@@ -258,6 +256,6 @@ def reset_analyst(analyst_id: str) -> None:
     """
     graph_name = f"memory_{analyst_id}"
     try:
-        db.select_graph(graph_name).delete()
+        db_module.get_db(graph_name).delete()
     except Exception:
         pass

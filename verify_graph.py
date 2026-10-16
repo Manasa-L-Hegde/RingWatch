@@ -3,10 +3,9 @@ verify_graph.py  –  Day 1 Cypher verification for the ringwatch fraud graph.
 Connects to FalkorDB graph "fraud" and runs 7 PASS/FAIL checks + 1 INFO check.
 """
 
-from falkordb import FalkorDB
+import db as db_module
 
-db = FalkorDB(host="localhost", port=6379)
-g  = db.select_graph("fraud")
+g = db_module.get_db("fraud")
 
 results = []   # list of (check_id, description, actual, expected_str, status)
 

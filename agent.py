@@ -6,23 +6,25 @@ Never logs or prints GEMINI_API_KEY.
 """
 
 import argparse
+import json
 import os
 import re
 import sys
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from dotenv import load_dotenv
 
 # Load environment variables (never print/log keys)
 load_dotenv()
 
+import db as db_module
 import memory
 import tools
 import verdict
 
 # Model selection overridable by environment variable
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 
 SYSTEM_PROMPT = (
     "You investigate suspected fraud using only the provided tools. "
@@ -42,13 +44,14 @@ def extract_id_tokens(text: str) -> List[str]:
     return TOKEN_PATTERN.findall(text)
 
 
-def accepts(sentence: str, result: Dict[str, Any]) -> bool:
+def check_sentence(sentence: str, result: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     """
     Checks that every id-like token in sentence appears in known ids from results.
     Also rejects if the sentence claims links when there were none.
+    Returns (is_accepted, rejected_reason).
     """
-    if not sentence or not isinstance(sentence, str):
-        return False
+    if not sentence or not isinstance(sentence, str) or not sentence.strip():
+        return False, "Sentence is empty or not a string."
 
     tokens = extract_id_tokens(sentence)
 
@@ -68,6 +71,12 @@ def accepts(sentence: str, result: Dict[str, Any]) -> bool:
         for ev in result["path_evidence"]:
             for tok in extract_id_tokens(ev):
                 known_ids.add(tok)
+    if "recall" in result and result["recall"]:
+        for c in result["recall"].get("cases", []):
+            if c.get("case_id"):
+                known_ids.add(str(c["case_id"]))
+            for ent in c.get("overlapping_entities", []):
+                known_ids.add(str(ent))
     if "trace" in result and result["trace"]:
         for t in result["trace"]:
             args = t.get("args", {})
@@ -79,9 +88,9 @@ def accepts(sentence: str, result: Dict[str, Any]) -> bool:
                         known_ids.add(tok)
 
     # 1. Every extracted token must be in known_ids
-    for tok in tokens:
-        if tok not in known_ids:
-            return False
+    invalid_tokens = [tok for tok in tokens if tok not in known_ids]
+    if invalid_tokens:
+        return False, f"Unknown/unsupported ID tokens: {invalid_tokens} (not in known IDs: {sorted(list(known_ids))})"
 
     # 2. Rejects if claiming links when there were none
     verdict_val = result.get("verdict")
@@ -109,9 +118,20 @@ def accepts(sentence: str, result: Dict[str, Any]) -> bool:
                     "not safe",
                 ]
                 if not any(neg in sentence_lower for neg in negations):
-                    return False
+                    return False, f"Claimed link/connection ('{word}') when no links were found"
 
-    return True
+    return True, None
+
+
+def accepts(sentence: str, result: Dict[str, Any], return_reason: bool = False) -> Union[bool, Tuple[bool, Optional[str]]]:
+    """
+    Checks that every id-like token in sentence appears in known ids from results.
+    Also rejects if the sentence claims links when there were none.
+    """
+    ok, reason = check_sentence(sentence, result)
+    if return_reason:
+        return ok, reason
+    return ok
 
 
 def build_template_sentence(result: Dict[str, Any]) -> str:
@@ -132,30 +152,36 @@ def build_template_sentence(result: Dict[str, Any]) -> str:
         return f"Order {order_id} by {user} exhibits suspicious shared connections with {len(ring_members)} other accounts."
 
 
-def _run_deterministic_pipeline(order_id: str, analyst_id: str, has_memory: bool = False) -> Dict[str, Any]:
-    """Execute the deterministic pipeline with tools in a fixed order."""
+def _run_deterministic_pipeline(order_id: str, analyst_id: str, has_memory: bool = False, cached_call=None) -> Dict[str, Any]:
+    """Execute the deterministic pipeline with tools in a fixed order, using cached_call if provided."""
     traces = []
     known_ids = {order_id}
 
+    def _call(tool_name: str, args: Dict[str, Any], func):
+        if cached_call:
+            res, trace_entry, _ = cached_call(tool_name, args, func)
+            traces.append(trace_entry)
+            return res
+        res = func(**args)
+        traces.append(res["trace"])
+        return res
+
     # 1. order_facts
-    f_res = tools.order_facts(order_id)
-    traces.append(f_res["trace"])
+    f_res = _call("order_facts", {"order_id": order_id}, tools.order_facts)
     order_user = f_res["data"]["user"]
     known_ids.add(order_user)
     if f_res["data"].get("shipping_address"):
         known_ids.add(f_res["data"]["shipping_address"])
 
     # 2. find_linked_accounts
-    la_res = tools.find_linked_accounts(order_id)
-    traces.append(la_res["trace"])
+    la_res = _call("find_linked_accounts", {"order_id": order_id}, tools.find_linked_accounts)
     direct_linked = la_res["data"].get("linked_users", [])
     direct_shared = la_res["data"].get("shared_entities", [])
     known_ids.update(direct_linked)
     known_ids.update(direct_shared)
 
     # 3. detect_ring
-    dr_res = tools.detect_ring(order_user, max_hops=12)
-    traces.append(dr_res["trace"])
+    dr_res = _call("detect_ring", {"user_id": order_user, "max_hops": 12}, tools.detect_ring)
     ring_members = dr_res["data"].get("members", [])
     known_ids.update(ring_members)
 
@@ -163,16 +189,14 @@ def _run_deterministic_pipeline(order_id: str, analyst_id: str, has_memory: bool
     path_evidence = []
     if ring_members and not has_memory:
         target_member = ring_members[-1]
-        ep_res = tools.explain_path(order_user, target_member)
-        traces.append(ep_res["trace"])
+        ep_res = _call("explain_path", {"user_a": order_user, "user_b": target_member}, tools.explain_path)
         if ep_res["outcome"] == "path_found":
             path_evidence = ep_res["evidence"]
             known_ids.update(ep_res["data"].get("nodes", []))
 
     # 5. ring_stats
     all_users = [order_user] + ring_members if ring_members else [order_user]
-    rs_res = tools.ring_stats(all_users)
-    traces.append(rs_res["trace"])
+    rs_res = _call("ring_stats", {"user_ids": all_users}, tools.ring_stats)
     shared_kinds = rs_res["data"].get("connecting_entity_kinds", [])
 
     return {
@@ -187,7 +211,7 @@ def _run_deterministic_pipeline(order_id: str, analyst_id: str, has_memory: bool
     }
 
 
-def _run_llm_pipeline(order_id: str, analyst_id: str, initial_data: Dict[str, Any]) -> Tuple[Dict[str, Any], str, str]:
+def _run_llm_pipeline(order_id: str, analyst_id: str, initial_data: Dict[str, Any], cached_call=None) -> Tuple[Dict[str, Any], str, str]:
     """
     Execute Gemini function calling loop with max 6 tool calls.
     Returns (pipeline_data, explanation_sentence, sentence_source).
@@ -207,13 +231,23 @@ def _run_llm_pipeline(order_id: str, analyst_id: str, initial_data: Dict[str, An
     tool_call_count = 0
     max_tool_calls = 6
 
+    def _call(tool_name: str, args: Dict[str, Any], func):
+        nonlocal tool_call_count
+        if cached_call:
+            res, trace_entry, is_hit = cached_call(tool_name, args, func)
+            if not is_hit:
+                tool_call_count += 1
+            traces.append(trace_entry)
+            return res
+        tool_call_count += 1
+        res = func(**args)
+        traces.append(res["trace"])
+        return res
+
     # Wrapped tool catalogue for LLM
     def order_facts(order_id: str) -> dict:
         """Get order details including user, amount, flagged status, and shipping address."""
-        nonlocal tool_call_count
-        tool_call_count += 1
-        res = tools.order_facts(order_id)
-        traces.append(res["trace"])
+        res = _call("order_facts", {"order_id": order_id}, tools.order_facts)
         if res.get("data"):
             if res["data"].get("user"):
                 known_ids.add(res["data"]["user"])
@@ -223,10 +257,7 @@ def _run_llm_pipeline(order_id: str, analyst_id: str, initial_data: Dict[str, An
 
     def find_linked_accounts(order_id: str) -> dict:
         """Find users directly linked to an order via shared Device or Card."""
-        nonlocal tool_call_count
-        tool_call_count += 1
-        res = tools.find_linked_accounts(order_id)
-        traces.append(res["trace"])
+        res = _call("find_linked_accounts", {"order_id": order_id}, tools.find_linked_accounts)
         if res.get("data"):
             known_ids.update(res["data"].get("linked_users", []))
             known_ids.update(res["data"].get("shared_entities", []))
@@ -234,10 +265,8 @@ def _run_llm_pipeline(order_id: str, analyst_id: str, initial_data: Dict[str, An
 
     def detect_ring(user_id: str, max_hops: int = 12) -> dict:
         """Detect accounts reachable via shared devices/cards within max_hops (max 12)."""
-        nonlocal tool_call_count, ring_members
-        tool_call_count += 1
-        res = tools.detect_ring(user_id, max_hops=min(max_hops, 12))
-        traces.append(res["trace"])
+        nonlocal ring_members
+        res = _call("detect_ring", {"user_id": user_id, "max_hops": min(max_hops, 12)}, tools.detect_ring)
         if res.get("data"):
             members = res["data"].get("members", [])
             ring_members = sorted(list(set(ring_members + members)))
@@ -246,10 +275,8 @@ def _run_llm_pipeline(order_id: str, analyst_id: str, initial_data: Dict[str, An
 
     def explain_path(user_a: str, user_b: str) -> dict:
         """Find the shortest path and connecting evidence between two users."""
-        nonlocal tool_call_count, path_evidence
-        tool_call_count += 1
-        res = tools.explain_path(user_a, user_b)
-        traces.append(res["trace"])
+        nonlocal path_evidence
+        res = _call("explain_path", {"user_a": user_a, "user_b": user_b}, tools.explain_path)
         if res.get("data") and res["outcome"] == "path_found":
             path_evidence = res.get("evidence", [])
             known_ids.update(res["data"].get("nodes", []))
@@ -257,10 +284,8 @@ def _run_llm_pipeline(order_id: str, analyst_id: str, initial_data: Dict[str, An
 
     def ring_stats(user_ids: list[str]) -> dict:
         """Compute aggregate order count, flagged count, total amount, and connecting kinds."""
-        nonlocal tool_call_count, shared_kinds
-        tool_call_count += 1
-        res = tools.ring_stats(user_ids)
-        traces.append(res["trace"])
+        nonlocal shared_kinds
+        res = _call("ring_stats", {"user_ids": user_ids}, tools.ring_stats)
         if res.get("data"):
             shared_kinds = res["data"].get("connecting_entity_kinds", [])
         return res
@@ -296,8 +321,7 @@ def _run_llm_pipeline(order_id: str, analyst_id: str, initial_data: Dict[str, An
 
     # Ensure all user ids are in ring_stats
     all_users = [order_user] + ring_members if ring_members else [order_user]
-    rs_res = tools.ring_stats(all_users)
-    traces.append(rs_res["trace"])
+    rs_res = _call("ring_stats", {"user_ids": all_users}, tools.ring_stats)
     shared_kinds = rs_res["data"].get("connecting_entity_kinds", [])
 
     pipeline_data = {
@@ -320,12 +344,12 @@ def investigate(
     use_llm: bool = True,
 ) -> Dict[str, Any]:
     """
-    Main investigation entrypoint.
+    Main investigation entrypoint with caching and memory short-circuit.
     Returns:
         {"outcome": "path_found"|"answered_from_memory"|"not_linked"|"unknown_entity",
-         "verdict", "confidence", "reasons", "ring_members", "path_evidence",
-         "recall", "sentence", "sentence_source", "case_id",
-         "trace": [...], "tool_calls": int, "elapsed_ms": float}
+         "verdict", "confidence", "raw_score", "score_display", "reasons", "ring_members", "path_evidence",
+         "recall", "sentence", "raw_sentence", "sentence_source", "sentence_rejected_reason", "model", "case_id",
+         "trace": [...], "tool_calls": int, "cache_hits": int, "elapsed_ms": float}
     """
     start_time = time.perf_counter()
 
@@ -336,22 +360,63 @@ def investigate(
             "outcome": "unknown_entity",
             "verdict": None,
             "confidence": 0,
+            "raw_score": 0,
+            "score_display": "0",
             "reasons": ["Order not found in graph"],
             "ring_members": [],
             "path_evidence": [],
             "recall": None,
             "sentence": f"Order {order_id} could not be resolved in the graph.",
+            "raw_sentence": f"Order {order_id} could not be resolved in the graph.",
             "sentence_source": "fallback",
+            "sentence_rejected_reason": None,
+            "model": GEMINI_MODEL,
             "case_id": None,
             "trace": [],
             "tool_calls": 0,
+            "cache_hits": 0,
             "elapsed_ms": elapsed_ms,
         }
 
-    # Step 1a: quick initial facts and links to seed recall
-    f_res = tools.order_facts(order_id)
-    la_res = tools.find_linked_accounts(order_id)
+    # In-investigation tool result cache for deduplication
+    tool_cache: Dict[Tuple[str, Tuple], Any] = {}
+    cache_hits: int = 0
+    executed_tool_calls: int = 0
 
+    def cached_call(tool_name: str, args_dict: Dict[str, Any], tool_func) -> Tuple[Any, Dict[str, Any], bool]:
+        nonlocal cache_hits, executed_tool_calls
+        norm_args = {}
+        for k, v in args_dict.items():
+            if isinstance(v, list):
+                norm_args[k] = tuple(v)
+            else:
+                norm_args[k] = v
+        key = (tool_name, tuple(sorted(norm_args.items())))
+
+        if key in tool_cache:
+            cache_hits += 1
+            cached_res = tool_cache[key]
+            trace_entry = {
+                "tool": tool_name,
+                "args": args_dict,
+                "ms": 0.0,
+                "rows": cached_res.get("trace", {}).get("rows", 0),
+                "cache_hit": True,
+            }
+            return cached_res, trace_entry, True
+
+        executed_tool_calls += 1
+        res = tool_func(**args_dict)
+        trace_entry = dict(res.get("trace", {}))
+        trace_entry["cache_hit"] = False
+        tool_cache[key] = res
+        return res, trace_entry, False
+
+    # Cheap initial tools: order_facts and find_linked_accounts
+    f_res, f_trace, _ = cached_call("order_facts", {"order_id": order_id}, tools.order_facts)
+    la_res, la_trace, _ = cached_call("find_linked_accounts", {"order_id": order_id}, tools.find_linked_accounts)
+
+    initial_traces = [f_trace, la_trace]
     order_user = f_res["data"]["user"]
     linked_users = la_res["data"].get("linked_users", [])
     shared_entities = la_res["data"].get("shared_entities", [])
@@ -359,7 +424,96 @@ def investigate(
     seed_entities = [order_user] + linked_users + shared_entities
     recall_result = memory.recall_similar(analyst_id, seed_entities)
 
-    initial_traces = [f_res["trace"], la_res["trace"]]
+    # Memory short-circuit check:
+    # When recall finds a CONFIRMED past case sharing >= 3 entities with the current order,
+    # skip the LLM tool loop. Run only the cheap verification tools, compute verdict with memory boost,
+    # return outcome "answered_from_memory".
+    confirmed_case = None
+    if recall_result and recall_result.get("cases"):
+        for c in recall_result["cases"]:
+            if str(c.get("status", "")).lower() == "confirmed" and c.get("overlap_count", 0) >= 3:
+                confirmed_case = c
+                break
+
+    if confirmed_case is not None:
+        # Short-circuit triggered!
+        cid = confirmed_case.get("case_id", "unknown")
+        cdate = confirmed_case.get("date", "unknown")
+        overlap = confirmed_case.get("overlap_count", 0)
+
+        # Derive connecting entity kinds from shared_entities observed in cheap tools
+        shared_kinds = []
+        for se in shared_entities:
+            if se.startswith("d") and "Device" not in shared_kinds:
+                shared_kinds.append("Device")
+            elif se.startswith("c") and "Card" not in shared_kinds:
+                shared_kinds.append("Card")
+            elif se.startswith("a") and "Address" not in shared_kinds:
+                shared_kinds.append("Address")
+
+        all_ring_users = [order_user] + linked_users
+        cheap_stats = {
+            "user_ids": all_ring_users,
+            "order_count": max(len(all_ring_users), 3),
+            "flagged_count": 1 if f_res["data"].get("flagged") else 0,
+            "total_amount": float(f_res["data"].get("amount", 0.0)),
+            "connecting_entity_kinds": shared_kinds,
+        }
+
+        v_res = verdict.verdict(
+            ring_stats=cheap_stats,
+            shared_kinds=shared_kinds,
+            recall_result=recall_result,
+        )
+
+        past_conf = int(confirmed_case.get("confidence", 70) or 70)
+        boosted_conf = min(verdict.SCORE_MAX, past_conf + verdict.SCORE_CONFIRMED_CASE_BOOST)
+        final_conf = max(v_res["confidence"], boosted_conf)
+        raw_score = max(v_res.get("raw_score", v_res["confidence"]), past_conf + verdict.SCORE_CONFIRMED_CASE_BOOST)
+        score_disp = f"{verdict.SCORE_MAX} (raw {raw_score}, capped)" if raw_score > verdict.SCORE_MAX else str(final_conf)
+
+        shape = "mixed"
+        if shared_kinds == ["Device"]:
+            shape = "shared_device_chain"
+        elif shared_kinds == ["Card"]:
+            shape = "shared_card_ring"
+
+        new_case_id = memory.save_case(
+            analyst_id=analyst_id,
+            order_id=order_id,
+            ring_members=all_ring_users,
+            shared_entities=shared_entities + shared_kinds,
+            verdict=verdict.VERDICT_FRAUD_RING,
+            confidence=final_conf,
+            shape=shape,
+        )
+
+        sentence = f"Order {order_id} answered from memory: matches confirmed case {cid} on {cdate} sharing {overlap} entities."
+        elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+        return {
+            "outcome": "answered_from_memory",
+            "verdict": verdict.VERDICT_FRAUD_RING,
+            "confidence": final_conf,
+            "raw_score": raw_score,
+            "score_display": score_disp,
+            "reasons": v_res["reasons"],
+            "ring_members": linked_users,
+            "path_evidence": [],
+            "recall": recall_result,
+            "sentence": sentence,
+            "raw_sentence": sentence,
+            "sentence_source": "memory",
+            "sentence_rejected_reason": None,
+            "model": GEMINI_MODEL,
+            "case_id": new_case_id,
+            "trace": initial_traces,
+            "tool_calls": 2,  # Exactly 2 cheap calls!
+            "cache_hits": cache_hits,
+            "elapsed_ms": elapsed_ms,
+        }
+
+    # Cold investigation: proceed with full loop
     initial_known_ids = {order_id, order_user}
     initial_known_ids.update(linked_users)
     initial_known_ids.update(shared_entities)
@@ -387,12 +541,11 @@ def investigate(
     pipeline_data = None
     raw_sentence = ""
     sentence_source = "fallback"
-    tool_call_count = len(initial_traces)
 
     # Fast-path: if no linked accounts and no memory, check detect_ring directly to avoid unnecessary LLM latency
     if not linked_users and not shared_entities and not has_memory:
-        dr_res = tools.detect_ring(order_user, max_hops=12)
-        initial_traces.append(dr_res["trace"])
+        dr_res, dr_trace, _ = cached_call("detect_ring", {"user_id": order_user, "max_hops": 12}, tools.detect_ring)
+        initial_traces.append(dr_trace)
         if not dr_res["data"].get("members"):
             pipeline_data = {
                 "order_user": order_user,
@@ -403,34 +556,30 @@ def investigate(
                 "ring_stats": {"order_count": 1, "flagged_count": 0, "total_amount": f_res["data"]["amount"], "connecting_entity_kinds": []},
                 "traces": initial_traces,
                 "known_ids": initial_known_ids,
+                "tool_calls": executed_tool_calls,
             }
-            tool_call_count = len(initial_traces)
             sentence_source = "fallback"
 
-    # Step 1b & 3: Run LLM tool calling loop with retry and deterministic fallback
+    # LLM tool calling loop with retry and deterministic fallback
     if pipeline_data is None and use_llm and os.getenv("GEMINI_API_KEY"):
-        # Retry with backoff up to 2 retries
         for attempt in range(3):
             try:
                 pipeline_data, raw_sentence, sentence_source = _run_llm_pipeline(
-                    order_id, analyst_id, initial_data
+                    order_id, analyst_id, initial_data, cached_call=cached_call
                 )
-                tool_call_count += pipeline_data.get("tool_calls", 0)
                 break
             except Exception:
                 if attempt < 2:
                     time.sleep(1.0 * (attempt + 1))
                 else:
-                    pipeline_data = None  # Fall back to deterministic
+                    pipeline_data = None
 
     if pipeline_data is None:
-        # Fallback deterministic pipeline
-        det_data = _run_deterministic_pipeline(order_id, analyst_id, has_memory=has_memory)
+        det_data = _run_deterministic_pipeline(order_id, analyst_id, has_memory=has_memory, cached_call=cached_call)
         pipeline_data = det_data
-        tool_call_count = len(det_data["traces"])
         sentence_source = "fallback"
 
-    # Step 1c: Compute verdict from results
+    # Compute verdict from results
     ring_members = pipeline_data["ring_members"]
     shared_kinds = pipeline_data["shared_kinds"]
     path_evidence = pipeline_data["path_evidence"]
@@ -453,21 +602,22 @@ def investigate(
         "verdict": v_res["verdict"],
         "confidence": v_res["confidence"],
         "known_ids": known_ids,
+        "recall": recall_result,
         "trace": all_traces,
     }
 
-    # Step 1d & 1e: Check sentence with accepts()
+    # Check sentence with accepts()
     final_sentence = raw_sentence
-    if not accepts(final_sentence, result_summary):
+    sentence_rejected_reason = None
+    is_valid, reject_reason = check_sentence(raw_sentence, result_summary)
+    if not is_valid:
+        sentence_rejected_reason = reject_reason
         final_sentence = build_template_sentence(result_summary)
         sentence_source = "fallback"
+    else:
+        sentence_source = "llm"
 
     # Determine overall outcome
-    has_memory = (
-        recall_result
-        and recall_result.get("outcome") == "answered_from_memory"
-        and len(recall_result.get("cases", [])) > 0
-    )
     if has_memory:
         outcome = "answered_from_memory"
     elif v_res["verdict"] == verdict.VERDICT_NO_LINKS_FOUND or not ring_members:
@@ -475,7 +625,7 @@ def investigate(
     else:
         outcome = "path_found"
 
-    # Step 1f: Save case to memory
+    # Save case to memory
     shape = "mixed"
     if shared_kinds == ["Device"]:
         shape = "shared_device_chain"
@@ -498,15 +648,21 @@ def investigate(
         "outcome": outcome,
         "verdict": v_res["verdict"],
         "confidence": v_res["confidence"],
+        "raw_score": v_res.get("raw_score", v_res["confidence"]),
+        "score_display": v_res.get("score_display", str(v_res["confidence"])),
         "reasons": v_res["reasons"],
         "ring_members": ring_members,
         "path_evidence": path_evidence,
         "recall": recall_result,
         "sentence": final_sentence,
+        "raw_sentence": raw_sentence,
         "sentence_source": sentence_source,
+        "sentence_rejected_reason": sentence_rejected_reason,
+        "model": GEMINI_MODEL,
         "case_id": case_id,
         "trace": all_traces,
-        "tool_calls": tool_call_count,
+        "tool_calls": executed_tool_calls,
+        "cache_hits": cache_hits,
         "elapsed_ms": elapsed_ms,
     }
 
@@ -522,12 +678,15 @@ def print_cli_summary(res: Dict[str, Any]) -> None:
     print("=" * 80)
     print("  RINGWATCH INVESTIGATION REPORT")
     print("=" * 80)
+    print(f"Model:           {res.get('model', GEMINI_MODEL)}")
     print(f"Outcome:         {res.get('outcome')}")
     print(f"Verdict:         {res.get('verdict')}")
-    print(f"Confidence:      {res.get('confidence')}%")
+    print(f"Risk score (0-100, rule-based): {res.get('score_display', str(res.get('confidence')) + '%')}")
     print(f"Case ID:         {res.get('case_id')}")
     print(f"Sentence Source: {res.get('sentence_source')}")
-    print(f"Elapsed Time:    {res.get('elapsed_ms')} ms (Tool calls: {res.get('tool_calls')})")
+    if res.get("sentence_rejected_reason"):
+        print(f"Sentence Rejection Reason: {res.get('sentence_rejected_reason')}")
+    print(f"Elapsed Time:    {res.get('elapsed_ms')} ms (Tool calls: {res.get('tool_calls')}, Cache hits: {res.get('cache_hits', 0)})")
     print()
     print("Explanation:")
     print(f"  {res.get('sentence')}")
@@ -543,16 +702,17 @@ def print_cli_summary(res: Dict[str, Any]) -> None:
         print()
 
     print("Trace Table:")
-    print(f"{'Tool':<25} {'Args':<35} {'ms':>8} {'Rows':>6}")
+    print(f"{'Tool':<22} {'Args':<32} {'ms':>8} {'Rows':>6} {'Cache':>6}")
     print("-" * 80)
     for t in res.get("trace", []):
         tool_name = str(t.get("tool", ""))
         args_str = str(t.get("args", ""))
-        if len(args_str) > 34:
-            args_str = args_str[:31] + "..."
+        if len(args_str) > 31:
+            args_str = args_str[:28] + "..."
         ms = str(t.get("ms", 0))
         rows = str(t.get("rows", 0))
-        print(f"{tool_name:<25} {args_str:<35} {ms:>8} {rows:>6}")
+        cache_str = "HIT" if t.get("cache_hit") else "MISS"
+        print(f"{tool_name:<22} {args_str:<32} {ms:>8} {rows:>6} {cache_str:>6}")
     print("=" * 80)
     print()
 

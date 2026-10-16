@@ -1,7 +1,7 @@
 """
 demo_scenario.py - End-to-end interactive demo transcript for RingWatch.
 Demonstrates graph-based fraud ring detection, episodic memory recall, tenant isolation,
-variable-length graph expansion vs SQL joins, and deterministic safeguard fallbacks.
+variable-length graph expansion vs fixed joins, and deterministic safeguard fallbacks.
 Accepts --no-llm and defaults to using the LLM.
 """
 
@@ -10,13 +10,12 @@ import sys
 import time
 from typing import Any, Dict
 
+import db as db_module
 import memory
 import tools
-from agent import give_feedback, investigate
-from falkordb import FalkorDB
+from agent import GEMINI_MODEL, give_feedback, investigate
 
-db = FalkorDB(host="localhost", port=6379)
-fraud_graph = db.select_graph("fraud")
+fraud_graph = db_module.get_db("fraud")
 
 
 def print_header(title: str):
@@ -32,9 +31,11 @@ def print_step(step_num: int, title: str):
 
 def run_demo(use_llm: bool = True):
     total_start = time.perf_counter()
-    mode_str = "LLM Mode (Gemini)" if use_llm else "Deterministic Pipeline (--no-llm)"
+    mode_str = f"LLM Mode (Model: {GEMINI_MODEL})" if use_llm else "Deterministic Pipeline (--no-llm)"
 
     print_header(f"RINGWATCH FRAUD-RING INVESTIGATOR DEMO ({mode_str})")
+    if use_llm:
+        print(f"  Gemini Model: {GEMINI_MODEL}")
 
     # -------------------------------------------------------------------------
     # STEP 1: Reset memory for analysts a1 and a2
@@ -49,7 +50,6 @@ def run_demo(use_llm: bool = True):
     # Then a1 confirms it as fraud.
     # -------------------------------------------------------------------------
     print_step(2, "Analyst a1: First Investigation on Flagged Ring-A Order")
-    # Find flagged ring-A orders
     q_orders = (
         "MATCH (u:User)-[:PLACED]->(o:Order) "
         "WHERE u.id IN ['u182','u183','u184','u185','u186','u187'] AND o.flagged = true "
@@ -67,14 +67,18 @@ def run_demo(use_llm: bool = True):
     res_1 = investigate(analyst_id="a1", order_id=order_1, use_llm=use_llm)
     step2_tool_calls = res_1["tool_calls"]
     step2_confidence = res_1["confidence"]
+    step2_ms = res_1["elapsed_ms"]
     case_1_id = res_1["case_id"]
 
+    print(f"  Model:           {res_1.get('model', GEMINI_MODEL)}")
     print(f"  Verdict:         {res_1['verdict']}")
-    print(f"  Confidence:      {res_1['confidence']}%")
+    print(f"  Risk score (0-100, rule-based): {res_1.get('score_display', str(res_1['confidence']) + '%')}")
     print(f"  Outcome:         {res_1['outcome']}")
     print(f"  Case ID:         {case_1_id}")
-    print(f"  Tool Calls:      {step2_tool_calls}")
+    print(f"  Tool Calls:      {step2_tool_calls} (Elapsed: {step2_ms} ms)")
     print(f"  Sentence ({res_1['sentence_source']}): {res_1['sentence']}")
+    if res_1.get("sentence_rejected_reason"):
+        print(f"  Sentence Rejection Reason: {res_1['sentence_rejected_reason']}")
     print(f"  Ring Members:    {res_1['ring_members']}")
     if res_1["path_evidence"]:
         print(f"  Path Evidence:   {' -> '.join(res_1['path_evidence'][:3])}")
@@ -100,21 +104,27 @@ def run_demo(use_llm: bool = True):
     res_2 = investigate(analyst_id="a1", order_id=order_2, use_llm=use_llm)
     step3_tool_calls = res_2["tool_calls"]
     step3_confidence = res_2["confidence"]
+    step3_ms = res_2["elapsed_ms"]
 
+    print(f"  Model:           {res_2.get('model', GEMINI_MODEL)}")
     print(f"  Verdict:         {res_2['verdict']}")
-    print(f"  Confidence:      {step3_confidence}% (boosted from memory)")
+    print(f"  Risk score (0-100, rule-based): {res_2.get('score_display', str(step3_confidence) + '%')} (boosted from memory)")
     print(f"  Outcome:         {res_2['outcome']}")
     print(f"  Case ID:         {res_2['case_id']}")
     print(f"  Sentence ({res_2['sentence_source']}): {res_2['sentence']}")
+    if res_2.get("sentence_rejected_reason"):
+        print(f"  Sentence Rejection Reason: {res_2['sentence_rejected_reason']}")
     print("  Reasons Citing Past Memory:")
     for r in res_2["reasons"]:
         if case_1_id in r or "past case" in r.lower():
             print(f"    * {r}")
 
-    # Side by side comparison of tool calls
-    print("\n  Tool Calls Side-by-Side Comparison:")
-    print(f"    Step 2 (Cold investigation): {step2_tool_calls} tool calls")
-    print(f"    Step 3 (With memory recall):  {step3_tool_calls} tool calls (fewer calls!)")
+    # Side by side comparison of tool calls and elapsed ms
+    print("\n  Side-by-Side Comparison (Step 2 Cold vs Step 3 Short-Circuit Memory):")
+    print(f"    {'Metric':<25} {'Step 2 (Cold Investigation)':<30} {'Step 3 (Short-Circuit Memory)':<30}")
+    print(f"    {'-'*25} {'-'*30} {'-'*30}")
+    print(f"    {'Tool Calls':<25} {step2_tool_calls:<30} {step3_tool_calls:<30}")
+    print(f"    {'Elapsed Time':<25} {f'{step2_ms} ms':<30} {f'{step3_ms} ms':<30}")
 
     assert res_2["outcome"] == "answered_from_memory", f"Expected answered_from_memory, got {res_2['outcome']}"
     assert step3_confidence >= step2_confidence, f"Expected higher/equal confidence: {step3_confidence} >= {step2_confidence}"
@@ -132,7 +142,7 @@ def run_demo(use_llm: bool = True):
     res_a2 = investigate(analyst_id="a2", order_id=order_2, use_llm=use_llm)
     print(f"  Analyst a2 Outcome:    {res_a2['outcome']}")
     print(f"  Analyst a2 Verdict:    {res_a2['verdict']}")
-    print(f"  Analyst a2 Confidence: {res_a2['confidence']}%")
+    print(f"  Risk score (0-100, rule-based): {res_a2.get('score_display', str(res_a2['confidence']) + '%')}")
 
     assert res_a2["outcome"] != "answered_from_memory", "Analyst a2 should NOT have memory from a1!"
     assert res_a2["outcome"] == "path_found"
@@ -141,9 +151,9 @@ def run_demo(use_llm: bool = True):
 
     # -------------------------------------------------------------------------
     # STEP 5: Ring C: detect_ring("u193", max_hops=2) vs max_hops=12
-    # "what a join sees vs what the graph sees"
+    # "what a fixed 2-hop join sees vs what a variable-length graph traversal sees"
     # -------------------------------------------------------------------------
-    print_step(5, "Ring C Multi-Hop: What a Join Sees vs What the Graph Sees")
+    print_step(5, "Ring C Multi-Hop: what a fixed 2-hop join sees vs what a variable-length graph traversal sees")
     r_join = tools.detect_ring("u193", max_hops=2)
     r_graph = tools.detect_ring("u193", max_hops=12)
 
@@ -151,13 +161,13 @@ def run_demo(use_llm: bool = True):
     count_graph = len(r_graph["data"])
 
     print("  Comparison for Ring C user u193:")
-    print(f"    what a join sees vs what the graph sees:")
-    print(f"    - max_hops=2  (SQL 2-hop self-join sees): {count_join} user  {r_join['data']['members']}")
-    print(f"    - max_hops=12 (Graph traversal sees):    {count_graph} users {r_graph['data']['members']}")
+    print("    what a fixed 2-hop join sees vs what a variable-length graph traversal sees:")
+    print(f"    - max_hops=2  (fixed 2-hop join sees):             {count_join} user  {r_join['data']['members']}")
+    print(f"    - max_hops=12 (variable-length traversal sees):    {count_graph} users {r_graph['data']['members']}")
 
     assert count_join == 1, f"Expected 1 user for max_hops=2, got {count_join}"
     assert count_graph == 6, f"Expected 6 users for max_hops=12, got {count_graph}"
-    print("  -> Demonstration passed: SQL self-joins miss the fraud ring; graph traversal catches all 6 members.")
+    print("  -> Demonstration passed: fixed 2-hop join sees only immediate neighbor; variable-length traversal discovers all 6 members.")
 
     # -------------------------------------------------------------------------
     # STEP 6: Unknown order "o99999" -> unknown_entity, zero tool calls
@@ -179,9 +189,9 @@ def run_demo(use_llm: bool = True):
     # -------------------------------------------------------------------------
     print_step(7, "Isolated Normal User Order: NO_LINKS_FOUND Safeguard")
     res_iso = investigate(analyst_id="a1", order_id="o0", use_llm=use_llm)
-    print(f"  Order:      o0")
+    print("  Order:      o0")
     print(f"  Verdict:    {res_iso['verdict']}")
-    print(f"  Confidence: {res_iso['confidence']}%")
+    print(f"  Risk score (0-100, rule-based): {res_iso.get('score_display', str(res_iso['confidence']) + '%')}")
     print(f"  Sentence:   {res_iso['sentence']}")
     print("  Reasons:")
     for r in res_iso["reasons"]:

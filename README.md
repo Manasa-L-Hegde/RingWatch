@@ -6,8 +6,8 @@
 
 ### Hackathon Submissions
 - **Tracks Entered:**
-  - **Track 01:** Best Graph RAG Agent
-  - **Track 02:** Best FalkorDB Cloud Agent
+  - **Track 01: Agents That Act on Connected Data**
+  - **Track 02: Agent Memory and Coordination**
 - **Project Links:**
   - **Live Application:** [<LIVE_URL>](<LIVE_URL>)
   - **Demo Video:** [<DEMO_VIDEO_URL>](<DEMO_VIDEO_URL>)
@@ -117,7 +117,7 @@ graph TD
 
 ## 4. Key Cypher Queries & Graph Algorithms
 
-RingWatch leverages FalkorDB's native graph engine for operations that are impossible or prohibitive in traditional relational stores:
+RingWatch leverages native graph operations in FalkorDB:
 
 ### 1. Variable-Length Traversal (`detect_ring` in `tools.py`)
 ```cypher
@@ -125,7 +125,7 @@ MATCH (start:User {id:$user_id})-[:USED_DEVICE|PAID_WITH*1..{max_hops}]-(other:U
 WHERE other.id <> $user_id
 RETURN DISTINCT other.id AS member_id
 ```
-> *Why it needs a graph:* Discovers ring members across variable-depth chains of shared devices and cards in a single traversal, whereas relational databases require recursive CTEs that stall on cycles and deep paths.
+> *Why a graph model naturally fits:* SQL can express multi-hop relationships with recursive Common Table Expressions (CTEs), but a graph traversal naturally handles variable-depth alternating hops (`:USED_DEVICE`, `:PAID_WITH`) and circular paths in a single Cypher expression without recursive join boilerplate.
 
 ### 2. Shortest Path Evidence Route (`explain_path` in `tools.py`)
 ```cypher
@@ -133,14 +133,14 @@ MATCH (a:User {id:$a}),(b:User {id:$b})
 WITH shortestPath((a)-[:USED_DEVICE|PAID_WITH*..15]-(b)) AS p
 RETURN p
 ```
-> *Why it needs a graph:* Evaluates the minimal connecting path between two suspect accounts without combinatorial explosion, producing step-by-step evidence that human auditors can verify.
+> *Why a graph model naturally fits:* Native `shortestPath()` finds and returns the complete, ordered sequence of nodes and edges connecting two entities in a single query, directly supplying visual path evidence to the UI without client-side path stitching.
 
 ### 3. Weakly Connected Components (`find_rings` in `tools.py`)
 ```cypher
 CALL algo.WCC({relationshipTypes:['USED_DEVICE','PAID_WITH']})
 YIELD node, component
 ```
-> *Why it needs a graph:* Partitions the entire customer population into disjoint network components in linear time, uncovering all global fraud clusters across the platform in a single pass.
+> *Why a graph model naturally fits:* WCC discovers all disjoint clusters platform-wide in linear time directly inside the database engine, avoiding the need to extract large adjacency lists into application memory.
 
 ### 4. Direct Shared Infrastructure (`find_linked_accounts` in `tools.py`)
 ```cypher
@@ -150,7 +150,7 @@ UNION
 MATCH (u:User {id:$uid})-[:PAID_WITH]->(c:Card)<-[:PAID_WITH]-(o:User)
 RETURN DISTINCT o.id AS user, c.id AS shared_entity, 'Card' AS kind
 ```
-> *Why it needs a graph:* Rapidly identifies dual-hop connections linking accounts via shared cards or hardware fingerprints without scanning millions of transaction rows.
+> *Why a graph model naturally fits:* Extracts direct 2-hop hardware and payment card intersections connecting suspect accounts in a single index-backed traversal.
 
 ### 5. Episodic Memory Recall (`recall_similar` in `memory.py`)
 ```cypher
@@ -163,17 +163,16 @@ OPTIONAL MATCH (c)-[:MATCHES]->(p:Pattern)
 RETURN c.id, c.at, c.order_id, c.verdict, c.confidence, c.status, c.shape,
        overlap, shared_entities, p.name, p.confirmed_count, p.rejected_count
 ```
-> *Why it needs a graph:* Performs similarity matching across arbitrary entity subsets (users, devices, cards) to rank prior human decisions by topological overlap.
+> *Why a graph model naturally fits:* Calculates entity intersection counts across historical cases directly on the graph structure to rank prior human decisions by topological overlap.
 
 ---
 
 ## 5. What Breaks Without FalkorDB
 
-If implemented on a standard relational database:
-1. **Multi-Hop Traversal Collapse:** Discovering Ring C (7 users linked in a 12-hop chain) requires a 12-table self-join. In SQL, query planners either degrade exponentially or fail to handle variable lengths.
-2. **Missing Native Graph Algorithms:** Weakly Connected Components (`algo.WCC`) and `shortestPath()` are native in FalkorDB. Emulating them in SQL requires dumping the graph to memory or maintaining slow recursive stored procedures.
-3. **Sub-Millisecond Investigation Speed:** FalkorDB executes graph traversals in Redis-compatible memory, providing sub-millisecond lookups for interactive analyst workflows.
-4. **Episodic Memory Isolation:** FalkorDB allows spinning up isolated in-memory graphs per tenant/analyst on demand (`memory_{analyst_id}`) without schema migrations or complex row-level multi-tenancy rules.
+While relational databases can model connected networks using joins and recursive CTEs, what FalkorDB makes concrete and natural is:
+1. **Direct Path Evidence:** Native `shortestPath()` returns the complete, ordered sequence of nodes and edges in a single query; in SQL, reconstructing and ordering the full multi-table path for visual graph rendering requires custom procedural aggregation.
+2. **Built-in Graph Algorithms:** Graph partitioning like Weakly Connected Components (`algo.WCC`) runs directly in-engine across the entire dataset in linear time, without exporting table dumps to external graph processing frameworks.
+3. **Per-Tenant Memory in One Model:** Dynamic episodic memory graphs (`memory_{analyst_id}`) are created and queried on demand as first-class graphs alongside the fraud data, enabling topological overlap recall (`recall_similar`) without multi-tenant table partitioning or complex row-level joins.
 
 ---
 
@@ -220,7 +219,10 @@ RingWatch combines **episodic** and **semantic** memory:
 1. **Episodic Memory (`:Case`)**: Captures complete historical investigation snapshots, timestamps, verdicts, confidence levels, and involved entities.
 2. **Semantic Memory (`:Pattern`)**: Aggregates analyst confirmations and rejections to maintain counters for ring archetypes (`shared_device_chain`, `shared_card_ring`, `mixed`).
 3. **Analyst Tenant Isolation**: Each analyst operates inside their own FalkorDB graph (`memory_a1`, `memory_visitor-xxxx`). One analyst's feedback never alters another analyst's scoring.
-4. **Memory Short-Circuit Optimization**: When recall finds a **confirmed** past case sharing $\ge 3$ entities with the current order, the LLM tool loop is completely bypassed. Only two cheap verification tools run (`order_facts` and `find_linked_accounts`), reducing latency by over 80% while preserving explainability.
+4. **Memory Short-Circuit Optimization**: When recall finds a **confirmed** past case sharing $\ge 3$ entities with the current order, the LLM tool loop is completely bypassed. As measured in `python demo_scenario.py`:
+   - **Step 2 (Cold Investigation):** 5 tool calls, 189.09 ms elapsed.
+   - **Step 3 (Short-Circuit Memory):** 2 tool calls, 107.33 ms elapsed.
+   - **Efficiency Impact:** 60% reduction in tool calls (5 $\rightarrow$ 2) and a 43% reduction in execution time (189.09 ms $\rightarrow$ 107.33 ms). The entire 7-step demo scenario completes in 0.8 seconds.
 
 ---
 

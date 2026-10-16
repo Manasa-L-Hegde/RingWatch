@@ -45,10 +45,10 @@ devices = sorted({r["d"] for r in used_device})
 cards = sorted({r["c"] for r in paid_with})
 addrs = [f"a{i}" for i in range(N_ADDR)] + ["aB"]
 
-import db; db = db.get_db()
-try: db.select_graph("fraud").delete()
+import db
+try: db.get_client().select_graph("fraud").delete()
 except Exception: pass
-g = db.select_graph("fraud")
+g = db.get_client().select_graph("fraud")
 
 g.query("UNWIND $r AS x CREATE (:User {id:x.id, name:x.name})", {"r": users})
 g.query("UNWIND $r AS x CREATE (:Device {id:x})", {"r": devices})

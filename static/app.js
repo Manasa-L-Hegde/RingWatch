@@ -156,8 +156,35 @@ async function fetchHealth() {
         if (!res.ok) return;
         const data = await res.json();
         const badge = document.getElementById("modelBadge");
-        if (badge && data.model) {
-            badge.textContent = `Model: ${data.model}`;
+        if (badge) {
+            if (!data.has_gemini_key) {
+                badge.textContent = "Template Mode (No API Key)";
+                badge.className = "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-300 border border-amber-500/20";
+            } else if (data.model) {
+                badge.textContent = `Model: ${data.model}`;
+            }
+        }
+
+        // Fraud graph empty check
+        const noDataBanner = document.getElementById("noDataBanner");
+        const noDataMsg = document.getElementById("noDataMessage");
+        if (noDataBanner) {
+            if (data.status === "no_data") {
+                noDataBanner.classList.remove("hidden");
+                if (noDataMsg) noDataMsg.textContent = `⚠️ ${data.hint || "Fraud graph is missing or empty. Please run python build_graph.py"}`;
+            } else {
+                noDataBanner.classList.add("hidden");
+            }
+        }
+
+        // Public Demo mode: hide shared a1/a2 buttons
+        const quickBtns = document.getElementById("quickAnalystButtons");
+        if (quickBtns) {
+            if (data.public_demo) {
+                quickBtns.classList.add("hidden");
+            } else {
+                quickBtns.classList.remove("hidden");
+            }
         }
     } catch (err) {
         console.warn("Could not fetch health:", err);
@@ -182,7 +209,22 @@ function setAnalyst(id) {
     currentAnalyst = id;
     const input = document.getElementById("analystIdInput");
     if (input) input.value = id;
-    try { localStorage.setItem("ringwatch_analyst", id); } catch (_) {}
+    try {
+        localStorage.setItem("ringwatch_analyst", id);
+    } catch (e) {
+        console.warn("localStorage write failed, using in-memory:", e);
+    }
+}
+
+function startNewAnalyst() {
+    const newVisitorId = "visitor-" + Math.floor(1000 + Math.random() * 9000);
+    setAnalyst(newVisitorId);
+    showSuccess(`Started as fresh analyst: ${newVisitorId} (isolated memory tenant)`);
+    // If currently on Memory tab, re-fetch
+    const memPane = document.getElementById("tabMemory");
+    if (memPane && !memPane.classList.contains("hidden")) {
+        fetchAnalystMemory();
+    }
 }
 
 function loadExample(key) {
@@ -297,6 +339,10 @@ function renderInvestigationResult(data) {
         else scoreBar.className = "bg-emerald-500 h-2.5 rounded-full transition-all duration-300";
     }
 
+    if (data.outcome === "memory_full" || data.message === "demo memory is full, try again later") {
+        showError(data.message || "demo memory is full, try again later");
+    }
+
     // Explanation Sentence
     const sentenceEl = document.getElementById("sentenceText");
     const sourceTag = document.getElementById("sentenceSourceTag");
@@ -304,7 +350,10 @@ function renderInvestigationResult(data) {
 
     if (sentenceEl) sentenceEl.textContent = data.sentence || "";
     if (sourceTag) {
-        if (data.sentence_source === "llm") {
+        if (data.sentence_source_note === "template mode, no API key" || data.note === "template mode, no API key") {
+            sourceTag.className = "px-2 py-0.5 rounded text-[11px] font-bold bg-amber-600/30 text-amber-300 border border-amber-500/30";
+            sourceTag.textContent = "template mode, no API key";
+        } else if (data.sentence_source === "llm") {
             sourceTag.className = "px-2 py-0.5 rounded text-[11px] font-bold bg-blue-600 text-white";
             sourceTag.textContent = "written by Gemini";
         } else {
@@ -762,15 +811,22 @@ function showError(msg) {
 }
 
 function showSuccess(msg) {
-    const banner = document.getElementById("errorBanner");
-    const el = document.getElementById("errorMessage");
+    showInfo(msg);
+}
+
+function showInfo(msg) {
+    const banner = document.getElementById("infoBanner");
+    const el = document.getElementById("infoMessage");
     if (banner && el) {
         el.textContent = msg;
-        banner.className = "max-w-7xl mx-auto mt-4 px-6 w-full";
-        banner.firstElementChild.className = "bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-4 py-3 rounded-lg flex items-center justify-between text-sm";
         banner.classList.remove("hidden");
-        setTimeout(dismissError, 4000);
+        setTimeout(dismissInfo, 4000);
     }
+}
+
+function dismissInfo() {
+    const banner = document.getElementById("infoBanner");
+    if (banner) banner.classList.add("hidden");
 }
 
 function dismissError() {

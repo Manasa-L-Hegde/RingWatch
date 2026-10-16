@@ -45,7 +45,7 @@ devices = sorted({r["d"] for r in used_device})
 cards = sorted({r["c"] for r in paid_with})
 addrs = [f"a{i}" for i in range(N_ADDR)] + ["aB"]
 
-db = FalkorDB(host="localhost", port=6379)
+import db; db = db.get_db()
 try: db.select_graph("fraud").delete()
 except Exception: pass
 g = db.select_graph("fraud")

@@ -83,3 +83,9 @@ def get_db(graph_name: str = "fraud") -> Graph:
     """Returns a FalkorDB Graph object for graph_name without printing credentials."""
     client = get_client()
     return client.select_graph(graph_name)
+
+
+# Enable select_graph on Graph instance or module so code like db = db.get_db(); db.select_graph("fraud") works
+Graph.select_graph = lambda self, name="fraud": get_client().select_graph(name)
+select_graph = get_db
+

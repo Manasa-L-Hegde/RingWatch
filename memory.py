@@ -3,10 +3,31 @@ memory.py - Analyst episodic memory module for RingWatch.
 Manages isolated FalkorDB memory graphs per analyst: f"memory_{analyst_id}".
 """
 
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 import db as db_module
+
+MAX_MEMORY_GRAPHS = int(os.getenv("MAX_MEMORY_GRAPHS", "200"))
+
+
+class MemoryCapExceeded(Exception):
+    """Raised when MAX_MEMORY_GRAPHS is reached for a new analyst."""
+    pass
+
+
+def is_memory_cap_reached(analyst_id: str) -> bool:
+    """Return True if analyst is new and current memory graphs count >= MAX_MEMORY_GRAPHS."""
+    try:
+        max_graphs = int(os.getenv("MAX_MEMORY_GRAPHS", str(MAX_MEMORY_GRAPHS)))
+        client = db_module.get_client()
+        existing = [g for g in client.list_graphs() if g.startswith("memory_")]
+        if f"memory_{analyst_id}" in existing:
+            return False
+        return len(existing) >= max_graphs
+    except Exception:
+        return False
 
 
 def _get_analyst_graph(analyst_id: str):
@@ -55,9 +76,21 @@ def save_case(
     linking (Case)-[:INVOLVES]->(Entity).
     Returns case_id.
     """
+    if is_memory_cap_reached(analyst_id):
+        raise MemoryCapExceeded("demo memory is full, try again later")
+
     g = _get_analyst_graph(analyst_id)
     case_id = uuid.uuid4().hex[:8]
     now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Store created_at in (:Meta) node when a memory graph is first written
+    try:
+        g.query(
+            "MERGE (m:Meta) ON CREATE SET m.created_at = $created_at",
+            {"created_at": now_iso},
+        )
+    except Exception:
+        pass
 
     # Collect and normalize all entities
     entities_map = {}

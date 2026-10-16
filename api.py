@@ -116,21 +116,37 @@ class FeedbackRequest(BaseModel):
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint returning DB connectivity and model metadata."""
+    node_count = 0
+    db_ok = False
     try:
         g = db_module.get_db("fraud")
         r = g.ro_query("MATCH (n) RETURN count(n) LIMIT 1").result_set
         node_count = r[0][0] if r else 0
-        db_ok = True
+        db_ok = node_count > 0
     except Exception:
         node_count = 0
         db_ok = False
 
+    has_gemini = bool(os.getenv("GEMINI_API_KEY"))
+
+    if not db_ok or node_count == 0:
+        return {
+            "status": "no_data",
+            "hint": "Fraud graph is missing or empty. Please run python build_graph.py to populate it.",
+            "database": "empty" if db_ok else "disconnected",
+            "nodes": 0,
+            "model": agent.GEMINI_MODEL,
+            "public_demo": PUBLIC_DEMO,
+            "has_gemini_key": has_gemini,
+        }
+
     return {
-        "status": "healthy" if db_ok else "degraded",
-        "database": "connected" if db_ok else "disconnected",
+        "status": "ok",
+        "database": "connected",
         "nodes": node_count,
         "model": agent.GEMINI_MODEL,
         "public_demo": PUBLIC_DEMO,
+        "has_gemini_key": has_gemini,
     }
 
 
@@ -176,11 +192,34 @@ async def run_investigate(req: InvestigateRequest, request: Request):
     """
     analyst = validate_analyst_id(req.analyst)
 
+    # Check memory graph cap for new analysts
+    if memory.is_memory_cap_reached(analyst):
+        return {
+            "outcome": "memory_full",
+            "message": "demo memory is full, try again later",
+            "error": "demo memory is full, try again later",
+            "detail": "demo memory is full, try again later",
+            "sentence": "demo memory is full, try again later",
+            "sentence_source": "template",
+            "verdict": "UNKNOWN",
+            "confidence": 0,
+            "reasons": ["demo memory is full, try again later"],
+            "tool_calls": 0,
+            "trace": [],
+            "graph": {"nodes": [], "edges": []},
+            "note": "demo memory is full, try again later",
+        }
+
     # Client IP for rate limiting
     client_ip = request.client.host if request.client else "127.0.0.1"
 
-    use_llm = req.use_llm
+    has_gemini_key = bool(os.getenv("GEMINI_API_KEY"))
+    use_llm = req.use_llm and has_gemini_key
     demo_limit_note = None
+
+    if req.use_llm and not has_gemini_key:
+        demo_limit_note = "template mode, no API key"
+
     if use_llm and PUBLIC_DEMO:
         allowed, note = check_public_demo_rate_limit(client_ip)
         if not allowed:
@@ -200,6 +239,10 @@ async def run_investigate(req: InvestigateRequest, request: Request):
     )
     res["graph"] = subgraph
 
+    if not has_gemini_key:
+        res["note"] = "template mode, no API key"
+        res["sentence_source_note"] = "template mode, no API key"
+
     if demo_limit_note:
         res["demo_limit_note"] = demo_limit_note
         if res.get("sentence_source") == "fallback":
@@ -212,6 +255,8 @@ async def run_investigate(req: InvestigateRequest, request: Request):
 async def record_feedback_endpoint(req: FeedbackRequest):
     """Record analyst feedback on an episodic memory case."""
     analyst = validate_analyst_id(req.analyst)
+    if memory.is_memory_cap_reached(analyst):
+        return {"status": "error", "message": "demo memory is full, try again later"}
     res = agent.give_feedback(analyst_id=analyst, case_id=req.case_id, confirmed=req.confirmed)
     return res
 
@@ -220,6 +265,14 @@ async def record_feedback_endpoint(req: FeedbackRequest):
 async def get_analyst_memory(analyst: str):
     """Retrieve that analyst's saved cases and pattern counters."""
     analyst = validate_analyst_id(analyst)
+    if memory.is_memory_cap_reached(analyst):
+        return {
+            "analyst": analyst,
+            "cases": [],
+            "patterns": [],
+            "total_cases": 0,
+            "message": "demo memory is full, try again later",
+        }
     mem_graph = db_module.get_db(f"memory_{analyst}")
 
     cases = []

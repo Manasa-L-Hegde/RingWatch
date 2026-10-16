@@ -478,20 +478,25 @@ def investigate(
         elif shared_kinds == ["Card"]:
             shape = "shared_card_ring"
 
-        new_case_id = memory.save_case(
-            analyst_id=analyst_id,
-            order_id=order_id,
-            ring_members=all_ring_users,
-            shared_entities=shared_entities + shared_kinds,
-            verdict=verdict.VERDICT_FRAUD_RING,
-            confidence=final_conf,
-            shape=shape,
-        )
+        memory_note = None
+        try:
+            new_case_id = memory.save_case(
+                analyst_id=analyst_id,
+                order_id=order_id,
+                ring_members=all_ring_users,
+                shared_entities=shared_entities + shared_kinds,
+                verdict=verdict.VERDICT_FRAUD_RING,
+                confidence=final_conf,
+                shape=shape,
+            )
+        except memory.MemoryCapExceeded as e:
+            new_case_id = None
+            memory_note = str(e)
 
         sentence = f"Order {order_id} answered from memory: matches confirmed case {cid} on {cdate} sharing {overlap} entities."
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
-        return {
+        res = {
             "outcome": "answered_from_memory",
             "verdict": verdict.VERDICT_FRAUD_RING,
             "confidence": final_conf,
@@ -512,6 +517,9 @@ def investigate(
             "cache_hits": cache_hits,
             "elapsed_ms": elapsed_ms,
         }
+        if memory_note:
+            res["memory_note"] = memory_note
+        return res
 
     # Cold investigation: proceed with full loop
     initial_known_ids = {order_id, order_user}
@@ -632,19 +640,25 @@ def investigate(
     elif shared_kinds == ["Card"]:
         shape = "shared_card_ring"
 
-    case_id = memory.save_case(
-        analyst_id=analyst_id,
-        order_id=order_id,
-        ring_members=([order_user] + ring_members) if ring_members else [order_user],
-        shared_entities=list(pipeline_data.get("direct_shared", [])) + shared_kinds,
-        verdict=v_res["verdict"],
-        confidence=v_res["confidence"],
-        shape=shape,
-    )
+    memory_note = None
+    try:
+        case_id = memory.save_case(
+            analyst_id=analyst_id,
+            order_id=order_id,
+            ring_members=([order_user] + ring_members) if ring_members else [order_user],
+            shared_entities=list(pipeline_data.get("direct_shared", [])) + shared_kinds,
+            verdict=v_res["verdict"],
+            confidence=v_res["confidence"],
+            shape=shape,
+        )
+    except memory.MemoryCapExceeded as e:
+        case_id = None
+        memory_note = str(e)
 
     elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
-    return {
+    has_gemini = bool(os.getenv("GEMINI_API_KEY"))
+    res_dict = {
         "outcome": outcome,
         "verdict": v_res["verdict"],
         "confidence": v_res["confidence"],
@@ -665,6 +679,13 @@ def investigate(
         "cache_hits": cache_hits,
         "elapsed_ms": elapsed_ms,
     }
+    if not has_gemini:
+        res_dict["note"] = "template mode, no API key"
+        res_dict["sentence_source_note"] = "template mode, no API key"
+    if memory_note:
+        res_dict["memory_note"] = memory_note
+
+    return res_dict
 
 
 def give_feedback(analyst_id: str, case_id: str, confirmed: bool) -> Dict[str, Any]:

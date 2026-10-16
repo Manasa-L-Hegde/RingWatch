@@ -505,3 +505,113 @@ def ring_stats(user_ids: List[str]) -> Dict[str, Any]:
         "evidence": evidence,
         "trace": {"tool": "ring_stats", "args": args, "ms": elapsed_ms, "rows": len(uids)},
     }
+
+
+def ring_subgraph(
+    user_ids: List[str],
+    order_id: Optional[str] = None,
+    evidence_path: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    UI helper only (not part of LLM tool catalogue).
+    Builds a subgraph dictionary with nodes [{id, kind, label}] and edges [{source, target, rel, on_path}].
+    Includes the ring members, the order, and any Device/Card/Address shared by >= 2 of them,
+    with the edges between them. Marks edges on the evidence path with on_path=True.
+    Read-only ro_query only.
+    """
+    import re
+
+    nodes: Dict[str, Dict[str, str]] = {}
+    edges: List[Dict[str, Any]] = []
+    edge_keys: Set[Tuple[str, str, str]] = set()
+
+    # Parse path evidence into edge pairs
+    path_pairs: Set[Tuple[str, str]] = set()
+    if evidence_path:
+        for ev in evidence_path:
+            parts = re.findall(r"\b(?:u\d+|o\d+|d[A-Z0-9]\w*|c[A-Z0-9]\w*|a[A-Z0-9]\w*)\b", ev)
+            for i in range(len(parts) - 1):
+                p1, p2 = parts[i], parts[i + 1]
+                path_pairs.add((p1, p2))
+                path_pairs.add((p2, p1))
+
+    def add_node(nid: str, kind: str, label: Optional[str] = None):
+        if nid not in nodes:
+            nodes[nid] = {"id": nid, "kind": kind, "label": label or nid}
+
+    def add_edge(src: str, tgt: str, rel: str, force_on_path: bool = False):
+        key = (src, tgt, rel)
+        if key not in edge_keys:
+            edge_keys.add(key)
+            on_p = force_on_path or (src, tgt) in path_pairs or (tgt, src) in path_pairs
+            edges.append({
+                "source": src,
+                "target": tgt,
+                "rel": rel,
+                "on_path": on_p,
+            })
+
+    uids = list(user_ids or [])
+    for u in uids:
+        add_node(u, "User")
+
+    # Order details
+    order_user = None
+    if order_id and resolve("order", order_id):
+        add_node(order_id, "Order")
+        # Find who placed order
+        q_ord = "MATCH (u:User)-[:PLACED]->(o:Order {id: $oid}) RETURN u.id"
+        r_ord = graph.ro_query(q_ord, {"oid": order_id}).result_set
+        if r_ord and r_ord[0][0]:
+            order_user = r_ord[0][0]
+            add_node(order_user, "User")
+            if order_user not in uids:
+                uids.append(order_user)
+            add_edge(order_user, order_id, "PLACED", force_on_path=True)
+
+        # Check shipping address for order
+        q_ship = "MATCH (o:Order {id: $oid})-[:SHIPPED_TO]->(a:Address) RETURN a.id"
+        r_ship = graph.ro_query(q_ship, {"oid": order_id}).result_set
+        if r_ship and r_ship[0][0]:
+            aid = r_ship[0][0]
+            add_node(aid, "Address")
+            add_edge(order_id, aid, "SHIPPED_TO")
+
+    if uids:
+        # 1. Devices shared by >= 2 users
+        q_dev = (
+            "MATCH (u:User)-[:USED_DEVICE]->(d:Device)<-[:USED_DEVICE]-(v:User) "
+            "WHERE u.id IN $uids AND v.id IN $uids AND u <> v "
+            "RETURN DISTINCT u.id, d.id, 'USED_DEVICE'"
+        )
+        for r in (graph.ro_query(q_dev, {"uids": uids}).result_set or []):
+            uid, did, rel = r[0], r[1], r[2]
+            add_node(did, "Device")
+            add_edge(uid, did, rel)
+
+        # 2. Cards shared by >= 2 users
+        q_card = (
+            "MATCH (u:User)-[:PAID_WITH]->(c:Card)<-[:PAID_WITH]-(v:User) "
+            "WHERE u.id IN $uids AND v.id IN $uids AND u <> v "
+            "RETURN DISTINCT u.id, c.id, 'PAID_WITH'"
+        )
+        for r in (graph.ro_query(q_card, {"uids": uids}).result_set or []):
+            uid, cid, rel = r[0], r[1], r[2]
+            add_node(cid, "Card")
+            add_edge(uid, cid, rel)
+
+        # 3. Addresses shared by >= 2 users
+        q_addr = (
+            "MATCH (u:User)-[:PLACED]->(:Order)-[:SHIPPED_TO]->(a:Address)<-[:SHIPPED_TO]-(:Order)<-[:PLACED]-(v:User) "
+            "WHERE u.id IN $uids AND v.id IN $uids AND u <> v "
+            "RETURN DISTINCT u.id, a.id, 'SHIPPED_TO'"
+        )
+        for r in (graph.ro_query(q_addr, {"uids": uids}).result_set or []):
+            uid, aid, rel = r[0], r[1], r[2]
+            add_node(aid, "Address")
+            add_edge(uid, aid, rel)
+
+    return {
+        "nodes": list(nodes.values()),
+        "edges": edges,
+    }

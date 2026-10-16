@@ -1,0 +1,9 @@
+.env
+ground_truth.json
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+.git
+.gitignore

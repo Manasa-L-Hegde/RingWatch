@@ -1,0 +1,60 @@
+/* static/style.css - Custom styling for RingWatch Dark Theme */
+
+@layer utilities {
+    /* Custom scrollbar */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+        background: #111827;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #374151;
+        border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: #4B5563;
+    }
+}
+
+/* Cytoscape Container */
+#cy {
+    width: 100%;
+    height: 480px;
+    background: #0f172a;
+    border-radius: 0.75rem;
+    position: relative;
+}
+
+/* Badge styles */
+.badge-path_found {
+    background-color: #ef4444;
+    color: #ffffff;
+}
+.badge-answered_from_memory {
+    background-color: #8b5cf6;
+    color: #ffffff;
+}
+.badge-not_linked {
+    background-color: #10b981;
+    color: #ffffff;
+}
+.badge-unknown_entity {
+    background-color: #6b7280;
+    color: #ffffff;
+}
+
+/* Pulsing effect for loading state */
+@keyframes pulse-slow {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+.animate-pulse-slow {
+    animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Tooltip & Node Inspector */
+.node-inspector {
+    transition: all 0.2s ease-in-out;
+}

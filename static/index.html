@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RingWatch - FalkorDB Graph Fraud-Ring Investigator</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkbg: '#0B0F17',
+                        cardbg: '#161F30',
+                        bordercolor: '#26334D',
+                        userblue: '#3B82F6',
+                        deviceamber: '#F59E0B',
+                        cardgreen: '#10B981',
+                        addresspurple: '#8B5CF6',
+                        orderred: '#EF4444'
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Cytoscape.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="bg-darkbg text-gray-100 min-h-screen flex flex-col font-sans">
+
+    <!-- Top Navigation Header -->
+    <header class="bg-cardbg border-b border-bordercolor px-6 py-4 sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto flex flex-wrap justify-between items-center gap-4">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-xl shadow-inner">
+                    🛡️
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                        RingWatch
+                        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">FalkorDB</span>
+                    </h1>
+                    <p class="text-xs text-gray-400">Graph Fraud-Ring Investigator with Episodic Memory</p>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-3">
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                    <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                    Synthetic data only
+                </span>
+                <span id="modelBadge" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                    Model: loading...
+                </span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="bg-cardbg/80 border-b border-bordercolor px-6">
+        <div class="max-w-7xl mx-auto flex space-x-6 text-sm font-medium overflow-x-auto">
+            <button id="tabBtnInvestigate" onclick="switchTab('investigate')" class="py-3 border-b-2 border-blue-500 text-blue-400 font-semibold focus:outline-none flex items-center gap-1.5">
+                <span>🔍</span> Investigate
+            </button>
+            <button id="tabBtnMemory" onclick="switchTab('memory')" class="py-3 border-b-2 border-transparent text-gray-400 hover:text-gray-200 focus:outline-none flex items-center gap-1.5">
+                <span>🧠</span> Analyst Memory
+            </button>
+            <button id="tabBtnRings" onclick="switchTab('rings')" class="py-3 border-b-2 border-transparent text-gray-400 hover:text-gray-200 focus:outline-none flex items-center gap-1.5">
+                <span>🕸️</span> Detected Rings (WCC)
+            </button>
+            <button id="tabBtnJoin" onclick="switchTab('join')" class="py-3 border-b-2 border-transparent text-gray-400 hover:text-gray-200 focus:outline-none flex items-center gap-1.5">
+                <span>📊</span> Join vs Graph
+            </button>
+            <button id="tabBtnAbout" onclick="switchTab('about')" class="py-3 border-b-2 border-transparent text-gray-400 hover:text-gray-200 focus:outline-none flex items-center gap-1.5">
+                <span>ℹ️</span> About
+            </button>
+        </div>
+    </nav>
+
+    <!-- Global Inline Error Banner (No alert() popups) -->
+    <div id="errorBanner" class="hidden max-w-7xl mx-auto mt-4 px-6 w-full">
+        <div class="bg-red-500/10 border border-red-500/30 text-red-300 px-4 py-3 rounded-lg flex items-center justify-between text-sm">
+            <span id="errorMessage">Error description goes here</span>
+            <button onclick="dismissError()" class="text-red-400 hover:text-red-200 text-base font-bold ml-4">&times;</button>
+        </div>
+    </div>
+
+    <!-- Main Content Area -->
+    <main class="max-w-7xl mx-auto w-full flex-1 p-6">
+
+        <!-- ================================================================= -->
+        <!-- TAB 1: INVESTIGATE -->
+        <!-- ================================================================= -->
+        <div id="tabInvestigate" class="tab-pane">
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+                <!-- Left Control Panel -->
+                <div class="lg:col-span-4 space-y-5">
+                    <div class="bg-cardbg border border-bordercolor rounded-xl p-5 shadow-sm space-y-4">
+                        <h2 class="text-base font-semibold text-white flex items-center gap-2">
+                            <span>⚙️</span> Investigation Parameters
+                        </h2>
+
+                        <!-- Analyst Selector -->
+                        <div>
+                            <label class="block text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1.5">
+                                Analyst Identity
+                            </label>
+                            <div class="flex gap-2">
+                                <input id="analystIdInput" type="text" maxlength="20"
+                                    class="flex-1 bg-darkbg border border-bordercolor rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                    placeholder="visitor-xxxx">
+                                <button onclick="setAnalyst('a1')" class="px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-bordercolor font-medium">a1</button>
+                                <button onclick="setAnalyst('a2')" class="px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-bordercolor font-medium">a2</button>
+                            </div>
+                            <p class="text-[11px] text-gray-400 mt-1">Private memory tenant isolation is enforced per analyst.</p>
+                        </div>
+
+                        <!-- Order Input -->
+                        <div>
+                            <label class="block text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1.5">
+                                Target Order ID
+                            </label>
+                            <input id="orderIdInput" type="text"
+                                class="w-full bg-darkbg border border-bordercolor rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                placeholder="e.g. o546">
+                        </div>
+
+                        <!-- 1-Click Example Buttons -->
+                        <div>
+                            <label class="block text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">
+                                1-Click Examples
+                            </label>
+                            <div class="grid grid-cols-2 gap-2">
+                                <button onclick="loadExample('ring_a')" class="text-left px-3 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg text-xs font-medium text-red-300 transition-colors">
+                                    🔴 Ring-A Order
+                                </button>
+                                <button onclick="loadExample('ring_c')" class="text-left px-3 py-2 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 rounded-lg text-xs font-medium text-amber-300 transition-colors">
+                                    🟠 Ring-C Multi-Hop
+                                </button>
+                                <button onclick="loadExample('isolated')" class="text-left px-3 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 rounded-lg text-xs font-medium text-emerald-300 transition-colors">
+                                    🟢 Isolated Normal
+                                </button>
+                                <button onclick="loadExample('unknown')" class="text-left px-3 py-2 bg-gray-500/10 hover:bg-gray-500/20 border border-gray-500/20 rounded-lg text-xs font-medium text-gray-300 transition-colors">
+                                    ⚪ Unknown (o99999)
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Use Gemini Switch -->
+                        <div class="pt-2 border-t border-bordercolor flex items-center justify-between">
+                            <div>
+                                <span class="text-sm font-medium text-white block">Use Gemini Agent</span>
+                                <span class="text-xs text-gray-400">Function-calling tool loop with safeguards</span>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input id="useGeminiToggle" type="checkbox" checked class="sr-only peer">
+                                <div class="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                            </label>
+                        </div>
+
+                        <!-- Action Button -->
+                        <button id="btnInvestigate" onclick="triggerInvestigation()"
+                            class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 px-4 rounded-lg shadow-sm transition-all duration-150 flex items-center justify-center gap-2">
+                            <span id="btnInvestigateIcon">🚀</span>
+                            <span id="btnInvestigateText">Investigate Order</span>
+                        </button>
+                    </div>
+
+                    <!-- Selected Node Inspector -->
+                    <div id="nodeInspectorCard" class="hidden bg-cardbg border border-bordercolor rounded-xl p-4 shadow-sm node-inspector">
+                        <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Graph Node Inspector</h3>
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-2">
+                                <span id="inspectNodeBadge" class="w-3.5 h-3.5 rounded-full inline-block"></span>
+                                <span id="inspectNodeId" class="text-base font-bold text-white font-mono">u182</span>
+                            </div>
+                            <span id="inspectNodeKind" class="text-xs font-medium px-2 py-0.5 rounded bg-gray-800 text-gray-300">User</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Results & Graph Area -->
+                <div class="lg:col-span-8 space-y-6">
+
+                    <!-- Interactive Cytoscape Graph -->
+                    <div class="bg-cardbg border border-bordercolor rounded-xl p-4 shadow-sm">
+                        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                            <h3 class="text-sm font-semibold text-white flex items-center gap-2">
+                                <span>🌐</span> Subgraph & Evidence Path
+                            </h3>
+                            <!-- Graph Legend -->
+                            <div class="flex flex-wrap items-center gap-3 text-xs font-medium text-gray-300">
+                                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-blue-500"></span>User</span>
+                                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-amber-500"></span>Device</span>
+                                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-emerald-500"></span>Card</span>
+                                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-purple-500"></span>Address</span>
+                                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-red-500"></span>Order</span>
+                                <span class="flex items-center gap-1.5"><span class="w-4 h-1 bg-red-500"></span>Evidence Path</span>
+                            </div>
+                        </div>
+
+                        <!-- Cytoscape DOM container -->
+                        <div id="cy" class="border border-bordercolor/60"></div>
+                        <p class="text-[11px] text-gray-400 mt-2">Click any node to inspect ID and details. Red glowing edges represent verified evidence path.</p>
+                    </div>
+
+                    <!-- Result Details Card -->
+                    <div id="resultCard" class="hidden bg-cardbg border border-bordercolor rounded-xl p-5 shadow-sm space-y-5">
+                        
+                        <!-- Fallback / Demo Limit Banner -->
+                        <div id="limitBanner" class="hidden bg-amber-500/10 border border-amber-500/30 text-amber-300 px-3.5 py-2 rounded-lg text-xs font-medium">
+                            ⚠️ demo limit reached, using template mode
+                        </div>
+
+                        <!-- Top Verdict Header -->
+                        <div class="flex flex-wrap items-start justify-between gap-4 border-b border-bordercolor pb-4">
+                            <div>
+                                <div class="flex items-center gap-2 mb-1.5">
+                                    <span id="outcomeBadge" class="text-xs font-bold px-2.5 py-1 rounded-md uppercase tracking-wider">
+                                        PATH_FOUND
+                                    </span>
+                                    <span id="verdictText" class="text-lg font-extrabold text-red-500">
+                                        FRAUD_RING
+                                    </span>
+                                </div>
+                                <p id="outcomeMeaning" class="text-xs text-gray-400">
+                                    One line outcome meaning
+                                </p>
+                            </div>
+
+                            <div class="text-right">
+                                <div class="text-xs text-gray-400 uppercase font-semibold">Risk score (0-100, rule-based)</div>
+                                <div id="riskScoreDisplay" class="text-2xl font-black text-white font-mono">85</div>
+                            </div>
+                        </div>
+
+                        <!-- Risk Score Bar -->
+                        <div>
+                            <div class="w-full bg-gray-800 rounded-full h-2.5 overflow-hidden">
+                                <div id="riskScoreBar" class="bg-red-500 h-2.5 rounded-full transition-all duration-300" style="width: 85%;"></div>
+                            </div>
+                        </div>
+
+                        <!-- Sentence Explanation -->
+                        <div class="bg-darkbg/80 border border-bordercolor rounded-lg p-3.5 space-y-1">
+                            <div class="flex items-center justify-between text-xs">
+                                <span class="font-semibold text-gray-400">Explanation Sentence</span>
+                                <span id="sentenceSourceTag" class="px-2 py-0.5 rounded text-[11px] font-bold">written by Gemini</span>
+                            </div>
+                            <p id="sentenceText" class="text-sm text-gray-200 font-medium">
+                                Investigation sentence content
+                            </p>
+                            <p id="sentenceRejectedNote" class="hidden text-xs text-amber-400/90 pt-1 italic">
+                                Note: LLM sentence was rejected by checker: reason
+                            </p>
+                        </div>
+
+                        <!-- Reasons List -->
+                        <div>
+                            <h4 class="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Decision Reasons</h4>
+                            <ul id="reasonsList" class="space-y-1.5 text-xs text-gray-300">
+                                <!-- Populated dynamically -->
+                            </ul>
+                        </div>
+
+                        <!-- Analyst Feedback Actions -->
+                        <div id="feedbackSection" class="pt-2 border-t border-bordercolor flex items-center justify-between gap-4">
+                            <span class="text-xs text-gray-400">Record feedback for episodic memory:</span>
+                            <div class="flex gap-2">
+                                <button id="btnConfirmFraud" onclick="sendFeedback(true)"
+                                    class="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-1">
+                                    <span>✅</span> Confirm Fraud
+                                </button>
+                                <button id="btnRejectFraud" onclick="sendFeedback(false)"
+                                    class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-1">
+                                    <span>❌</span> Reject (False Positive)
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Trace Table -->
+                        <div class="pt-3 border-t border-bordercolor">
+                            <div class="flex items-center justify-between mb-2">
+                                <h4 class="text-xs font-semibold uppercase tracking-wider text-gray-400">Execution Tool Trace</h4>
+                                <span id="traceSummary" class="text-xs font-mono text-gray-400">5 calls (0 hits), 134 ms</span>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-left text-xs border border-bordercolor rounded-lg overflow-hidden">
+                                    <thead class="bg-gray-800/80 text-gray-400 font-semibold border-b border-bordercolor">
+                                        <tr>
+                                            <th class="p-2">Tool</th>
+                                            <th class="p-2">Arguments</th>
+                                            <th class="p-2 text-right">ms</th>
+                                            <th class="p-2 text-right">Rows</th>
+                                            <th class="p-2 text-center">Cache</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="traceTableBody" class="divide-y divide-bordercolor font-mono">
+                                        <!-- Trace rows populated dynamically -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                    </div>
+
+                </div>
+            </div>
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- TAB 2: MEMORY -->
+        <!-- ================================================================= -->
+        <div id="tabMemory" class="tab-pane hidden space-y-6">
+            <div class="bg-cardbg border border-bordercolor rounded-xl p-6 shadow-sm">
+                <div class="flex flex-wrap items-center justify-between gap-4 mb-4">
+                    <div>
+                        <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                            <span>🧠</span> Episodic Memory: <span id="memoryAnalystDisplay" class="text-blue-400 font-mono">a1</span>
+                        </h2>
+                        <p class="text-xs text-gray-400">Cases confirmed or rejected by this analyst, used for automatic memory recall.</p>
+                    </div>
+                    <button onclick="resetAnalystMemory()" class="px-3.5 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 rounded-lg text-xs font-medium transition-colors">
+                        🗑️ Reset This Analyst's Memory
+                    </button>
+                </div>
+
+                <!-- Pattern Counters -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6" id="patternCountersContainer">
+                    <!-- Populated dynamically -->
+                </div>
+
+                <!-- Cases Table -->
+                <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Saved Cases</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs border border-bordercolor rounded-lg overflow-hidden">
+                        <thead class="bg-gray-800 text-gray-300 font-semibold border-b border-bordercolor">
+                            <tr>
+                                <th class="p-2.5">Date (UTC)</th>
+                                <th class="p-2.5">Case ID</th>
+                                <th class="p-2.5">Order</th>
+                                <th class="p-2.5">Verdict</th>
+                                <th class="p-2.5 text-right">Risk Score</th>
+                                <th class="p-2.5">Status</th>
+                                <th class="p-2.5">Pattern</th>
+                            </tr>
+                        </thead>
+                        <tbody id="memoryCasesTableBody" class="divide-y divide-bordercolor">
+                            <tr>
+                                <td colspan="7" class="p-4 text-center text-gray-400 italic">Loading memory cases...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- TAB 3: DETECTED RINGS (WCC) -->
+        <!-- ================================================================= -->
+        <div id="tabRings" class="tab-pane hidden space-y-6">
+            <div class="bg-cardbg border border-bordercolor rounded-xl p-6 shadow-sm">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                            <span>🕸️</span> Graph-Wide Fraud Rings (WCC)
+                        </h2>
+                        <p class="text-xs text-gray-400">Weakly Connected Components discovered on shared device and card relationships.</p>
+                    </div>
+                    <button onclick="fetchDetectedRings()" class="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium">
+                        🔄 Re-scan Rings
+                    </button>
+                </div>
+
+                <div id="detectedRingsContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <p class="text-xs text-gray-400 italic col-span-3">Loading detected rings...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- TAB 4: JOIN VS GRAPH -->
+        <!-- ================================================================= -->
+        <div id="tabJoin" class="tab-pane hidden space-y-6">
+            <div class="bg-cardbg border border-bordercolor rounded-xl p-6 shadow-sm space-y-5">
+                <div>
+                    <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                        <span>📊</span> Fixed 2-Hop Join vs Variable-Length Traversal
+                    </h2>
+                    <p class="text-xs text-gray-400">
+                        fixed 2-hop join vs variable-length traversal
+                    </p>
+                </div>
+
+                <!-- Controls -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-darkbg p-4 rounded-xl border border-bordercolor">
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-400 uppercase mb-1">Seed User ID</label>
+                        <input id="joinUserSelect" type="text" value="u193"
+                            class="bg-cardbg border border-bordercolor rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 w-full"
+                            onchange="fetchJoinVsGraph()">
+                    </div>
+                    <div>
+                        <div class="flex justify-between items-center mb-1">
+                            <label class="text-xs font-semibold text-gray-400 uppercase">Traversal Max Hops</label>
+                            <span id="hopsValueDisplay" class="text-xs font-bold text-blue-400 font-mono">12 hops</span>
+                        </div>
+                        <input id="maxHopsSlider" type="range" min="2" max="12" value="12" step="1"
+                            class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                            oninput="onHopsSliderChange(this.value)">
+                    </div>
+                </div>
+
+                <!-- Metrics Comparison -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="bg-darkbg/90 border border-bordercolor rounded-xl p-4">
+                        <span class="text-xs uppercase font-semibold text-gray-400">Fixed 2-Hop Join (max_hops=2)</span>
+                        <div class="text-3xl font-black text-amber-400 font-mono mt-1" id="joinCountDisplay">1</div>
+                        <p class="text-xs text-gray-400 mt-2">Discovered immediate neighbor only: <span id="joinMembersDisplay" class="font-mono text-gray-300">['u194']</span></p>
+                    </div>
+
+                    <div class="bg-darkbg/90 border border-bordercolor rounded-xl p-4">
+                        <span class="text-xs uppercase font-semibold text-gray-400">Variable-Length Traversal (<span id="currHopsLabel">12</span> hops)</span>
+                        <div class="text-3xl font-black text-emerald-400 font-mono mt-1" id="graphCountDisplay">6</div>
+                        <p class="text-xs text-gray-400 mt-2">Discovered transitive ring members: <span id="graphMembersDisplay" class="font-mono text-gray-300">['u194', 'u195', 'u196', 'u197', 'u198', 'u199']</span></p>
+                    </div>
+                </div>
+
+                <!-- Join Cytoscape Container -->
+                <div class="border border-bordercolor rounded-xl p-3 bg-darkbg">
+                    <div id="cyJoin" style="height: 380px; width: 100%;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- TAB 5: ABOUT -->
+        <!-- ================================================================= -->
+        <div id="tabAbout" class="tab-pane hidden space-y-6">
+            <div class="bg-cardbg border border-bordercolor rounded-xl p-6 shadow-sm space-y-6 max-w-3xl">
+                <div>
+                    <h2 class="text-lg font-bold text-white mb-2">About RingWatch</h2>
+                    <p class="text-sm text-gray-300 leading-relaxed">
+                        RingWatch is an autonomous, graph-native fraud ring investigation platform built on FalkorDB.
+                        Organized fraud networks actively evade relational database joins by staggering accounts across transitive chains of shared devices, payment cards, and shipping addresses.
+                        By leveraging Cypher variable-length path traversal and graph algorithms like Weakly Connected Components (WCC), RingWatch discovers deep entity rings in sub-millisecond graph queries that relational self-joins fail to capture.
+                    </p>
+                </div>
+
+                <div>
+                    <h3 class="text-base font-semibold text-white mb-2">The Four Investigation Outcomes</h3>
+                    <p class="text-sm text-gray-300 leading-relaxed">
+                        Every investigation deterministically resolves into one of four standard states:
+                        <span class="font-bold text-red-400">PATH_FOUND</span> indicates that a multi-hop connected ring was traversed and verified with graph evidence;
+                        <span class="font-bold text-purple-400">ANSWERED_FROM_MEMORY</span> activates when the order shares $\ge 3$ entities with a confirmed historical case in analyst episodic memory, short-circuiting deep tool loops;
+                        <span class="font-bold text-emerald-400">NOT_LINKED</span> means no shared device or card connections were identified; and
+                        <span class="font-bold text-gray-400">UNKNOWN_ENTITY</span> safely aborts if an order or user ID is not registered in the graph database.
+                    </p>
+                </div>
+
+                <div>
+                    <h3 class="text-base font-semibold text-amber-400 mb-2">Critical Safety Disclaimer</h3>
+                    <p class="text-sm text-gray-300 leading-relaxed bg-amber-500/10 border border-amber-500/30 p-3 rounded-lg">
+                        <strong>No links found does not mean safe.</strong> A clean or isolated graph query indicates only that no shared identifiers currently connect this entity to known rings in the database.
+                        It does not preclude synthetic identities, freshly created cards, or external attack vectors not yet recorded in the local graph.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-cardbg border-t border-bordercolor py-4 px-6 text-center text-xs text-gray-500">
+        Synthetic data only. AI assistants used: Claude, Gemini, Antigravity.
+    </footer>
+
+    <!-- App JavaScript -->
+    <script src="/static/app.js"></script>
+</body>
+</html>

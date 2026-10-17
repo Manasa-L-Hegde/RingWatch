@@ -304,13 +304,25 @@ FALKORDB_SSL=true
 
 ## 11. Test Suites & Demo
 
-### Run All Tests
+### Install Development & Testing Dependencies
+To run browser UI verification tests with Playwright:
+```bash
+pip install -r requirements-dev.txt
+python -m playwright install chromium
+```
+
+### Run Backend & Agent Test Suites
 ```bash
 python test_api.py             # FastAPI endpoints, memory cap, cleanup, safeguards
 python test_tools.py           # Cypher tools, variable hops, WCC components
 python test_memory_verdict.py  # Episodic memory, feedback, scoring thresholds
 python test_agent.py           # Agent loop, accepts() validation, memory recall
-python test_app_smoke.py       # Entity kind detection, DOT generation, helpers
+```
+
+### Run End-to-End Browser UI Verification
+Drives the application in a headless Chromium browser, testing 1-click examples, memory short-circuit, multi-tenant isolation, Cytoscape graph rendering, WCC rings, Join vs Graph traversal, and mobile responsiveness:
+```bash
+python ui_check.py
 ```
 
 ### Run Automated Demo Scenario
@@ -356,6 +368,7 @@ Visual artifacts are located in the [`docs/`](file:///c:/Users/manas/OneDrive/Do
 - `docs/ring-a.png`: Cytoscape visualization of Ring A showing `u184` bridging devices `dA1` and `dA2`.
 - `docs/ring-c.png`: Interactive graph view of the 12-hop Ring C daisy-chain topology.
 - `docs/memory.png`: Analyst memory tab displaying episodic cases, pattern stats, and confirmation history.
+- `docs/mobile.png`: Full-page responsive layout at 390px mobile viewport width.
 
 ---
 

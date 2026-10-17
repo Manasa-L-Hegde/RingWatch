@@ -2,3 +2,7 @@
 __pycache__/
 .venv/
 ground_truth.json
+*.log
+scratch/
+.pytest_cache/
+

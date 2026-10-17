@@ -326,12 +326,13 @@ async def reset_analyst_memory(analyst: str):
 @app.get("/api/rings")
 async def get_detected_rings():
     """Run WCC algorithm to detect fraud ring components and return summary stats."""
-    wcc_res = tools.find_rings(min_size=3)
+    wcc_res = tools.find_rings(min_users=3)
     components = wcc_res.get("data", [])
 
     rings = []
     for i, comp in enumerate(components):
-        stats = tools.ring_stats(comp)
+        members = comp.get("users", []) if isinstance(comp, dict) else comp
+        stats = tools.ring_stats(members)
         sdata = stats.get("data", {})
         v = verdict.verdict(
             ring_stats=sdata,
@@ -339,8 +340,8 @@ async def get_detected_rings():
         )
         rings.append({
             "component_id": i,
-            "size": len(comp),
-            "members": comp,
+            "size": len(members),
+            "members": members,
             "order_count": sdata.get("order_count", 0),
             "flagged_count": sdata.get("flagged_count", 0),
             "total_amount": sdata.get("total_amount", 0.0),
@@ -358,22 +359,25 @@ async def get_detected_rings():
 async def get_ring_graph(component: str):
     """Generate Cytoscape graph payload for a specific detected ring."""
     # Check if component is integer index or user list
-    wcc_res = tools.find_rings(min_size=3)
+    wcc_res = tools.find_rings(min_users=3)
     components = wcc_res.get("data", [])
     members = []
     if component.isdigit():
         idx = int(component)
         if 0 <= idx < len(components):
-            members = components[idx]
+            item = components[idx]
+            members = item.get("users", []) if isinstance(item, dict) else item
     if not members:
         # Try finding matching component containing member
-        for comp in components:
-            if component in comp:
-                members = comp
+        for item in components:
+            u_list = item.get("users", []) if isinstance(item, dict) else item
+            if component in u_list:
+                members = u_list
                 break
 
     if not members and components:
-        members = components[0]
+        first = components[0]
+        members = first.get("users", []) if isinstance(first, dict) else first
 
     graph = tools.ring_subgraph(user_ids=members)
     return {"component": component, "members": members, "graph": graph}

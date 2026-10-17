@@ -219,10 +219,15 @@ RingWatch combines **episodic** and **semantic** memory:
 1. **Episodic Memory (`:Case`)**: Captures complete historical investigation snapshots, timestamps, verdicts, confidence levels, and involved entities.
 2. **Semantic Memory (`:Pattern`)**: Aggregates analyst confirmations and rejections to maintain counters for ring archetypes (`shared_device_chain`, `shared_card_ring`, `mixed`).
 3. **Analyst Tenant Isolation**: Each analyst operates inside their own FalkorDB graph (`memory_a1`, `memory_visitor-xxxx`). One analyst's feedback never alters another analyst's scoring.
-4. **Memory Short-Circuit Optimization**: When recall finds a **confirmed** past case sharing $\ge 3$ entities with the current order, the LLM tool loop is completely bypassed. As measured in `python demo_scenario.py`:
-   - **Step 2 (Cold Investigation):** 5 tool calls, 189.09 ms elapsed.
-   - **Step 3 (Short-Circuit Memory):** 2 tool calls, 107.33 ms elapsed.
-   - **Efficiency Impact:** 60% reduction in tool calls (5 $\rightarrow$ 2) and a 43% reduction in execution time (189.09 ms $\rightarrow$ 107.33 ms). The entire 7-step demo scenario completes in 0.8 seconds.
+4. **Memory Short-Circuit Optimization**: When recall finds a **confirmed** past case sharing $\ge 3$ entities with the current order, the expensive LLM tool calling loop is completely bypassed in favor of two cheap verification checks. As directly measured in `demo_scenario.py`:
+   - **Template mode (`python demo_scenario.py --no-llm`):**
+     - Cold investigation (Step 2): **5 tool calls**, **164.86 ms** elapsed
+     - Memory short-circuit (Step 3): **2 tool calls**, **88.47 ms** elapsed
+     - Efficiency impact: **60% reduction in tool calls** (5 $\rightarrow$ 2) and a **46.3% latency reduction** (164.86 ms $\rightarrow$ 88.47 ms). The full 7-step demo scenario completes in **0.66 seconds**.
+   - **Gemini mode (`python demo_scenario.py` with `gemini-flash-lite-latest`):**
+     - Cold investigation (Step 2): **5 tool calls**, **14,037.63 ms** elapsed (multi-turn function-calling network round-trips)
+     - Memory short-circuit (Step 3): **2 tool calls**, **106.61 ms** elapsed (bypasses LLM network calls entirely, querying local FalkorDB directly)
+     - Efficiency impact: **99.2% latency reduction** (14,037.63 ms $\rightarrow$ 106.61 ms) and **60% fewer tool calls**. The full 7-step scenario completes in **22.77 seconds**.
 
 ---
 

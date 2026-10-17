@@ -528,11 +528,11 @@ def investigate(
     if f_res["data"].get("shipping_address"):
         initial_known_ids.add(f_res["data"]["shipping_address"])
 
-    has_memory = bool(
-        recall_result
-        and recall_result.get("outcome") == "answered_from_memory"
-        and len(recall_result.get("cases", [])) > 0
-    )
+    confirmed_cases = [
+        c for c in (recall_result.get("cases", []) if recall_result else [])
+        if str(c.get("status", "")).lower() == "confirmed"
+    ]
+    has_memory = bool(confirmed_cases)
 
     initial_data = {
         "order_user": order_user,

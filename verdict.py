@@ -4,6 +4,7 @@ Evaluates graph findings and analyst memory to classify fraud rings without LLM 
 """
 
 from typing import Any, Dict, List, Optional, Set, Union
+from tools import format_display_date
 
 # =============================================================================
 # CONSTANTS & THRESHOLDS
@@ -165,14 +166,16 @@ def verdict(
         score += SCORE_CONFIRMED_CASE_BOOST
         best_c = confirmed_cases[0]
         cid = best_c.get("case_id", "unknown")
-        cdate = best_c.get("date", "unknown")
+        cdate_raw = best_c.get("date", "unknown")
+        cdate = format_display_date(cdate_raw) if cdate_raw != "unknown" else "unknown"
         reasons.append(f"Overlapping CONFIRMED past case: {cid} on {cdate} (+{SCORE_CONFIRMED_CASE_BOOST})")
 
     if rejected_cases:
         score += SCORE_REJECTED_CASE_PENALTY
         best_rej = rejected_cases[0]
         cid = best_rej.get("case_id", "unknown")
-        cdate = best_rej.get("date", "unknown")
+        cdate_raw = best_rej.get("date", "unknown")
+        cdate = format_display_date(cdate_raw) if cdate_raw != "unknown" else "unknown"
         reasons.append(f"Overlapping REJECTED past case: {cid} on {cdate} ({SCORE_REJECTED_CASE_PENALTY})")
 
     # Cap score at [SCORE_MIN, SCORE_MAX]

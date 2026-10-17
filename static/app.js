@@ -100,25 +100,33 @@ function initCytoscape() {
             {
                 selector: "edge",
                 style: {
-                    "width": 2,
+                    "width": 1.5,
                     "line-color": "#475569",
                     "target-arrow-color": "#475569",
                     "target-arrow-shape": "triangle",
                     "curve-style": "bezier",
-                    "label": "data(rel)",
-                    "font-size": "9px",
+                    "label": "",
+                    "font-size": "8px",
                     "color": "#94a3b8",
-                    "text-background-color": "#0f172a",
-                    "text-background-opacity": 0.8,
-                    "text-background-padding": "2px"
+                    "text-background-color": "#0B0F17",
+                    "text-background-opacity": 0.9,
+                    "text-background-padding": "2px",
+                    "text-rotation": "autorotate"
                 }
             },
             {
                 selector: "edge[?on_path]",
                 style: {
-                    "width": 4,
+                    "width": 3,
                     "line-color": "#EF4444",
                     "target-arrow-color": "#EF4444",
+                    "label": "data(rel)",
+                    "font-size": "8px",
+                    "color": "#fca5a5",
+                    "text-background-color": "#450a0a",
+                    "text-background-opacity": 0.95,
+                    "text-background-padding": "2px",
+                    "text-rotation": "autorotate",
                     "z-index": 20
                 }
             }
@@ -350,10 +358,7 @@ function renderInvestigationResult(data) {
 
     if (sentenceEl) sentenceEl.textContent = data.sentence || "";
     if (sourceTag) {
-        if (data.sentence_source_note === "template mode, no API key" || data.note === "template mode, no API key") {
-            sourceTag.className = "px-2 py-0.5 rounded text-[11px] font-bold bg-amber-600/30 text-amber-300 border border-amber-500/30";
-            sourceTag.textContent = "template mode, no API key";
-        } else if (data.sentence_source === "llm") {
+        if (data.sentence_source === "llm") {
             sourceTag.className = "px-2 py-0.5 rounded text-[11px] font-bold bg-blue-600 text-white";
             sourceTag.textContent = "written by Gemini";
         } else {
@@ -363,7 +368,7 @@ function renderInvestigationResult(data) {
     }
 
     if (rejNote) {
-        if (data.sentence_rejected_reason) {
+        if (data.sentence_rejected_reason && data.sentence_source === "fallback") {
             rejNote.classList.remove("hidden");
             rejNote.textContent = `Note: Model sentence rejected by rule checker: ${data.sentence_rejected_reason}`;
         } else {
@@ -708,14 +713,18 @@ function renderJoinCytoscape(graphData) {
                 {
                     selector: "edge",
                     style: {
-                        "width": 2,
+                        "width": 1.5,
                         "line-color": "#475569",
                         "target-arrow-color": "#475569",
                         "target-arrow-shape": "triangle",
                         "curve-style": "bezier",
                         "label": "data(rel)",
-                        "font-size": "9px",
-                        "color": "#94a3b8"
+                        "font-size": "8px",
+                        "color": "#94a3b8",
+                        "text-background-color": "#0B0F17",
+                        "text-background-opacity": 0.9,
+                        "text-background-padding": "2px",
+                        "text-rotation": "autorotate"
                     }
                 }
             ],

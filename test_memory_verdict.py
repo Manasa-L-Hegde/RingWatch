@@ -21,10 +21,9 @@ from tools import (
     detect_ring,
     ring_stats,
 )
-from falkordb import FalkorDB
+import db as db_module
 
-db = FalkorDB(host="localhost", port=6379)
-fraud_graph = db.select_graph("fraud")
+fraud_graph = db_module.get_db("fraud")
 
 
 def test_memory_isolation_and_feedback():
@@ -189,7 +188,7 @@ def test_verdict_engine():
     v_boosted = verdict(ring_stats=base_stats, shared_kinds=["Device"], recall_result=confirmed_recall)
     assert v_boosted["confidence"] == 70, f"Expected boosted confidence 70, got {v_boosted['confidence']}"
     assert v_boosted["verdict"] == VERDICT_FRAUD_RING, f"Expected FRAUD_RING after boost, got {v_boosted['verdict']}"
-    assert any("c_boost_1" in r and "2026-10-15" in r for r in v_boosted["reasons"]), (
+    assert any("c_boost_1" in r and ("15 Oct 2026" in r or "2026-10-15" in r) for r in v_boosted["reasons"]), (
         f"Expected reason mentioning case id and date: {v_boosted['reasons']}"
     )
     print(f"  [PASS] Memory boost (+15) applied: score {v_base['confidence']} -> {v_boosted['confidence']} ({v_boosted['verdict']})")
@@ -223,7 +222,7 @@ def test_verdict_engine():
     v_penalized = verdict(ring_stats=fraud_stats, shared_kinds=["Device"], recall_result=rejected_recall)
     assert v_penalized["confidence"] == 60, f"Expected penalized confidence 60, got {v_penalized['confidence']}"
     assert v_penalized["verdict"] == VERDICT_SUSPICIOUS, f"Expected SUSPICIOUS after rejection, got {v_penalized['verdict']}"
-    assert any("c_rej_99" in r and "2026-10-14" in r for r in v_penalized["reasons"]), (
+    assert any("c_rej_99" in r and ("14 Oct 2026" in r or "2026-10-14" in r) for r in v_penalized["reasons"]), (
         f"Expected reason mentioning case id and date: {v_penalized['reasons']}"
     )
     print(f"  [PASS] Rejected case penalty (-25) applied: score {v_fraud['confidence']} -> {v_penalized['confidence']} ({v_penalized['verdict']})")

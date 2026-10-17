@@ -86,7 +86,7 @@ def run_ui_checks():
         print("[2/7] Launching Playwright Chromium...")
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            context = browser.new_context(viewport={"width": 1280, "height": 800})
+            context = browser.new_context(viewport={"width": 1440, "height": 900})
             page = context.new_page()
 
             # Listen for console errors & failed requests
@@ -120,7 +120,7 @@ def run_ui_checks():
                 page.wait_for_selector("#btnInvestigate:not([disabled])", timeout=timeout)
                 page.wait_for_selector("#resultCard:not(.hidden)", timeout=timeout)
                 # Brief wait for Cytoscape DOM rendering
-                page.wait_for_timeout(400)
+                page.wait_for_timeout(500)
                 badge = page.locator("#outcomeBadge").inner_text().strip().upper()
                 return badge
 
@@ -154,9 +154,14 @@ def run_ui_checks():
             badge_a = wait_investigation()
             assert badge_a == "PATH FOUND", f"Expected PATH FOUND for Ring A, got {badge_a}"
 
-            # Save docs/ring-a.png (Ring A result with graph visible)
+            # Verify template mode label and absence of rejected note on ring_a
+            source_tag_a = page.locator("#sentenceSourceTag").inner_text().strip()
+            assert source_tag_a == "template", f"Expected sentence source 'template', got '{source_tag_a}'"
+            assert page.is_hidden("#sentenceRejectedNote"), "Sentence rejected note should be hidden in template mode"
+
+            # Save docs/ring-a.png (Ring A result with graph visible at 1440x900 viewport, not full page)
             ring_a_path = os.path.join(DOCS_DIR, "ring-a.png")
-            page.screenshot(path=ring_a_path, full_page=True)
+            page.screenshot(path=ring_a_path, full_page=False)
             assert os.path.exists(ring_a_path) and os.path.getsize(ring_a_path) > 1000, "ring-a.png screenshot failed!"
             print(f"  [OK] Saved {ring_a_path} ({os.path.getsize(ring_a_path)} bytes)")
 
@@ -175,9 +180,45 @@ def run_ui_checks():
             assert badge_mem == "ANSWERED FROM MEMORY", f"Expected ANSWERED FROM MEMORY for o547, got {badge_mem}"
             print(f"  [OK] Memory short-circuit confirmed on o547: outcome badge is {badge_mem}")
 
-            # Save docs/memory.png
+            # Check score equals sum of listed reasons
+            score_disp = page.locator("#riskScoreDisplay").inner_text().strip()
+            reasons_texts = page.locator("#reasonsList li").all_inner_texts()
+            import re
+            points = []
+            for r in reasons_texts:
+                m = re.search(r"\(([+-]?\d+)\)", r)
+                if m:
+                    points.append(int(m.group(1)))
+            raw_sum = sum(points)
+            if raw_sum > 100:
+                expected_disp = f"100 (raw {raw_sum}, capped)"
+            else:
+                expected_disp = str(raw_sum)
+            assert score_disp == expected_disp, f"Displayed score '{score_disp}' does not equal reasons sum '{expected_disp}'"
+            print(f"  [OK] Displayed score '{score_disp}' equals sum of reasons ({raw_sum})")
+
+            # Check non-traversal note
+            assert any("full ring not re-traversed in memory mode" in r for r in reasons_texts), (
+                f"Expected 'full ring not re-traversed in memory mode' in reasons: {reasons_texts}"
+            )
+            print("  [OK] Found 'full ring not re-traversed in memory mode' in reasons")
+
+            # Check template label and no rejected note
+            source_tag_mem = page.locator("#sentenceSourceTag").inner_text().strip()
+            assert source_tag_mem in ("template", "written by Gemini", "memory"), f"Unexpected source tag: {source_tag_mem}"
+            assert page.is_hidden("#sentenceRejectedNote"), "Sentence rejected note should be hidden in template mode"
+
+            # Check date format in reasons or sentence (e.g. 17 Oct 2026, 08:26 UTC)
+            sentence_text = page.locator("#sentenceText").inner_text().strip()
+            date_pattern = r"\d{1,2} [A-Z][a-z]{2} \d{4}, \d{2}:\d{2} UTC"
+            assert re.search(date_pattern, sentence_text) or any(re.search(date_pattern, r) for r in reasons_texts), (
+                f"Expected date formatted as '17 Oct 2026, 08:26 UTC' in sentence/reasons. Sentence: {sentence_text}"
+            )
+            print("  [OK] Date formatting matches '17 Oct 2026, 08:26 UTC'")
+
+            # Save docs/memory.png (1440x900 viewport screenshot, not full page)
             mem_path = os.path.join(DOCS_DIR, "memory.png")
-            page.screenshot(path=mem_path, full_page=True)
+            page.screenshot(path=mem_path, full_page=False)
             assert os.path.exists(mem_path) and os.path.getsize(mem_path) > 1000, "memory.png screenshot failed!"
             print(f"  [OK] Saved {mem_path} ({os.path.getsize(mem_path)} bytes)")
 
@@ -257,14 +298,14 @@ def run_ui_checks():
             assert count_12 == "6", f"Expected graph count 6 for 12 hops, got '{count_12}'"
             print("  [OK] Join vs graph @ 12 hops -> graphCountDisplay: 6")
 
-            # Save docs/ring-c.png (Join vs graph at 12 hops for u193)
+            # Save docs/ring-c.png (Join vs graph at 12 hops for u193, 1440x900 viewport, not full page)
             ring_c_path = os.path.join(DOCS_DIR, "ring-c.png")
-            page.screenshot(path=ring_c_path, full_page=True)
+            page.screenshot(path=ring_c_path, full_page=False)
             assert os.path.exists(ring_c_path) and os.path.getsize(ring_c_path) > 1000, "ring-c.png screenshot failed!"
             print(f"  [OK] Saved {ring_c_path} ({os.path.getsize(ring_c_path)} bytes)")
 
             # -------------------------------------------------------------
-            # (f) Mobile viewport check at 390px
+            # (f) Mobile viewport check at 390px (390x844 viewport, not full page)
             # -------------------------------------------------------------
             print("  Testing mobile viewport (390px)...")
             page.set_viewport_size({"width": 390, "height": 844})
@@ -277,9 +318,14 @@ def run_ui_checks():
             badge_mobile = wait_investigation()
             assert badge_mobile == "PATH FOUND", f"Expected PATH FOUND in mobile view, got {badge_mobile}"
 
-            # Save docs/mobile.png
+            # Verify template mode label and absence of rejected note on mobile
+            source_tag_mob = page.locator("#sentenceSourceTag").inner_text().strip()
+            assert source_tag_mob == "template", f"Expected sentence source 'template', got '{source_tag_mob}'"
+            assert page.is_hidden("#sentenceRejectedNote"), "Sentence rejected note should be hidden in template mode"
+
+            # Save docs/mobile.png (390x844 viewport screenshot, not full page)
             mobile_path = os.path.join(DOCS_DIR, "mobile.png")
-            page.screenshot(path=mobile_path, full_page=True)
+            page.screenshot(path=mobile_path, full_page=False)
             assert os.path.exists(mobile_path) and os.path.getsize(mobile_path) > 1000, "mobile.png screenshot failed!"
             print(f"  [OK] Saved {mobile_path} ({os.path.getsize(mobile_path)} bytes)")
 

@@ -13,10 +13,9 @@ from agent import (
     accepts,
 )
 import memory
-from falkordb import FalkorDB
+import db as db_module
 
-db = FalkorDB(host="localhost", port=6379)
-fraud_graph = db.select_graph("fraud")
+fraud_graph = db_module.get_db("fraud")
 
 
 def test_accepts_validation():
@@ -146,14 +145,38 @@ def test_memory_feedback_and_cross_analyst():
         assert res2_a1["outcome"] == "answered_from_memory", (
             f"Expected answered_from_memory for a1, got {res2_a1['outcome']}"
         )
-        assert res2_a1["confidence"] >= conf1, (
-            f"Expected higher or equal confidence with memory boost: {res2_a1['confidence']} vs {conf1}"
+        assert res2_a1["verdict"] == "FRAUD_RING", f"Expected FRAUD_RING, got {res2_a1['verdict']}"
+
+        # Assert displayed risk score equals sum of listed reasons (with cap if raw > 100)
+        import re
+        points = []
+        for r in res2_a1["reasons"]:
+            m = re.search(r"\(([+-]?\d+)\)", r)
+            if m:
+                points.append(int(m.group(1)))
+        reasons_sum = sum(points)
+        assert res2_a1["raw_score"] == reasons_sum, (
+            f"Expected raw_score {reasons_sum} == reasons sum, got {res2_a1['raw_score']}"
         )
+        expected_conf = min(100, max(0, reasons_sum))
+        assert res2_a1["confidence"] == expected_conf, (
+            f"Expected confidence {expected_conf} == capped reasons sum, got {res2_a1['confidence']}"
+        )
+        if reasons_sum > 100:
+            assert res2_a1["score_display"] == f"100 (raw {reasons_sum}, capped)"
+        else:
+            assert res2_a1["score_display"] == str(expected_conf)
+
+        # Assert the memory mode non-traversal reason is present
+        assert any("full ring not re-traversed in memory mode" in r for r in res2_a1["reasons"]), (
+            f"Expected 'full ring not re-traversed in memory mode' in reasons: {res2_a1['reasons']}"
+        )
+
         # Reason names the earlier case id and date
         assert any(case1_id in r for r in res2_a1["reasons"]), (
             f"Expected earlier case_id {case1_id} in reasons: {res2_a1['reasons']}"
         )
-        print(f"  [PASS] Analyst a1 on {order2} got answered_from_memory (conf: {res2_a1['confidence']}), mentioning case {case1_id}")
+        print(f"  [PASS] Analyst a1 on {order2} got answered_from_memory (score: {res2_a1['confidence']}), mentioning case {case1_id} and non-traversal note.")
 
         # 4. Analyst a2 investigates order2 -> must get NO memory from a1
         res2_a2 = investigate(analyst_id=a2, order_id=order2, use_llm=False)

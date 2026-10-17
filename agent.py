@@ -438,7 +438,8 @@ def investigate(
     if confirmed_case is not None:
         # Short-circuit triggered!
         cid = confirmed_case.get("case_id", "unknown")
-        cdate = confirmed_case.get("date", "unknown")
+        cdate_raw = confirmed_case.get("date", "unknown")
+        cdate = tools.format_display_date(cdate_raw) if cdate_raw != "unknown" else "unknown"
         overlap = confirmed_case.get("overlap_count", 0)
 
         # Derive connecting entity kinds from shared_entities observed in cheap tools
@@ -466,11 +467,12 @@ def investigate(
             recall_result=recall_result,
         )
 
-        past_conf = int(confirmed_case.get("confidence", 70) or 70)
-        boosted_conf = min(verdict.SCORE_MAX, past_conf + verdict.SCORE_CONFIRMED_CASE_BOOST)
-        final_conf = max(v_res["confidence"], boosted_conf)
-        raw_score = max(v_res.get("raw_score", v_res["confidence"]), past_conf + verdict.SCORE_CONFIRMED_CASE_BOOST)
-        score_disp = f"{verdict.SCORE_MAX} (raw {raw_score}, capped)" if raw_score > verdict.SCORE_MAX else str(final_conf)
+        final_conf = v_res["confidence"]
+        raw_score = v_res.get("raw_score", final_conf)
+        score_disp = v_res.get("score_display", str(final_conf))
+        observed_reasons = list(v_res["reasons"]) + [
+            f"linked users observed: {len(all_ring_users)} (full ring not re-traversed in memory mode)"
+        ]
 
         shape = "mixed"
         if shared_kinds == ["Device"]:
@@ -502,7 +504,7 @@ def investigate(
             "confidence": final_conf,
             "raw_score": raw_score,
             "score_display": score_disp,
-            "reasons": v_res["reasons"],
+            "reasons": observed_reasons,
             "ring_members": linked_users,
             "path_evidence": [],
             "recall": recall_result,
@@ -615,15 +617,19 @@ def investigate(
     }
 
     # Check sentence with accepts()
-    final_sentence = raw_sentence
     sentence_rejected_reason = None
-    is_valid, reject_reason = check_sentence(raw_sentence, result_summary)
-    if not is_valid:
-        sentence_rejected_reason = reject_reason
-        final_sentence = build_template_sentence(result_summary)
-        sentence_source = "fallback"
+    if raw_sentence:
+        is_valid, reject_reason = check_sentence(raw_sentence, result_summary)
+        if not is_valid:
+            sentence_rejected_reason = reject_reason
+            final_sentence = build_template_sentence(result_summary)
+            sentence_source = "fallback"
+        else:
+            final_sentence = raw_sentence
+            sentence_source = "llm"
     else:
-        sentence_source = "llm"
+        final_sentence = build_template_sentence(result_summary)
+        sentence_source = "template"
 
     # Determine overall outcome
     if has_memory:

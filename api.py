@@ -239,14 +239,15 @@ async def run_investigate(req: InvestigateRequest, request: Request):
     )
     res["graph"] = subgraph
 
-    if not has_gemini_key:
-        res["note"] = "template mode, no API key"
-        res["sentence_source_note"] = "template mode, no API key"
+    if not use_llm or not has_gemini_key:
+        res["sentence_source"] = "template"
+        res["sentence_rejected_reason"] = None
 
     if demo_limit_note:
         res["demo_limit_note"] = demo_limit_note
         if res.get("sentence_source") == "fallback":
             res["sentence_source"] = "template"
+            res["sentence_rejected_reason"] = None
 
     return res
 
@@ -289,7 +290,7 @@ async def get_analyst_memory(analyst: str):
             cases.append({
                 "case_id": row[0],
                 "order_id": row[1],
-                "date": row[2],
+                "date": tools.format_display_date(row[2]),
                 "verdict": row[3],
                 "confidence": row[4],
                 "status": row[5],
@@ -379,7 +380,7 @@ async def get_ring_graph(component: str):
         first = components[0]
         members = first.get("users", []) if isinstance(first, dict) else first
 
-    graph = tools.ring_subgraph(user_ids=members)
+    graph = tools.ring_subgraph(user_ids=members, include_address=False)
     return {"component": component, "members": members, "graph": graph}
 
 
@@ -399,7 +400,7 @@ async def get_join_vs_graph(user: str = "u193", max_hops: int = 2):
     members = res.get("data", {}).get("members", [])
     all_users = [user] + members
 
-    graph = tools.ring_subgraph(user_ids=all_users)
+    graph = tools.ring_subgraph(user_ids=all_users, include_address=False)
 
     return {
         "user": user,

@@ -127,7 +127,8 @@ def run_demo(use_llm: bool = True):
     print(f"    {'Elapsed Time':<25} {f'{step2_ms} ms':<30} {f'{step3_ms} ms':<30}")
 
     assert res_2["outcome"] == "answered_from_memory", f"Expected answered_from_memory, got {res_2['outcome']}"
-    assert step3_confidence >= step2_confidence, f"Expected higher/equal confidence: {step3_confidence} >= {step2_confidence}"
+    assert res_2["verdict"] == verdict.VERDICT_FRAUD_RING, f"Expected FRAUD_RING, got {res_2['verdict']}"
+    assert any("full ring not re-traversed in memory mode" in r for r in res_2["reasons"]), "Expected memory mode note in reasons"
     assert any(case_1_id in r for r in res_2["reasons"]), f"Expected case {case_1_id} cited in reasons"
     assert step3_tool_calls < step2_tool_calls, (
         f"Expected fewer tool calls in Step 3 ({step3_tool_calls}) than Step 2 ({step2_tool_calls})"

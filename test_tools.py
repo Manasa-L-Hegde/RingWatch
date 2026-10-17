@@ -2,7 +2,7 @@
 test_tools.py - Plain assert tests for RingWatch tools.py catalogue.
 """
 
-from falkordb import FalkorDB
+import db as db_module
 from tools import (
     order_facts,
     find_linked_accounts,
@@ -13,8 +13,7 @@ from tools import (
     resolve,
 )
 
-db = FalkorDB(host="localhost", port=6379)
-graph = db.select_graph("fraud")
+graph = db_module.get_db("fraud")
 
 
 def test_detect_ring_u193():

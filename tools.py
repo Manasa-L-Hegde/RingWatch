@@ -3,9 +3,37 @@ tools.py - Graph query tool catalogue for RingWatch (fraud-ring investigator).
 Connects to FalkorDB graph 'fraud' on localhost:6379.
 """
 
+import datetime
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 import db as db_module
+
+def format_display_date(val: Any) -> str:
+    """Format an ISO datetime or timestamp to '17 Oct 2026, 08:26 UTC'."""
+    if not val:
+        return ""
+    if isinstance(val, (int, float)):
+        dt = datetime.datetime.fromtimestamp(val, tz=datetime.timezone.utc)
+    elif isinstance(val, str):
+        val_str = val.strip()
+        try:
+            if val_str.endswith("Z"):
+                val_str = val_str[:-1] + "+00:00"
+            dt = datetime.datetime.fromisoformat(val_str)
+        except Exception:
+            return val
+    elif isinstance(val, datetime.datetime):
+        dt = val
+    else:
+        return str(val)
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    else:
+        dt = dt.astimezone(datetime.timezone.utc)
+
+    return dt.strftime("%d %b %Y, %H:%M UTC")
+
 
 # Initialize FalkorDB connection and graph via centralized factory
 graph = db_module.get_db("fraud")
@@ -511,11 +539,12 @@ def ring_subgraph(
     user_ids: List[str],
     order_id: Optional[str] = None,
     evidence_path: Optional[List[str]] = None,
+    include_address: bool = False,
 ) -> Dict[str, Any]:
     """
     UI helper only (not part of LLM tool catalogue).
     Builds a subgraph dictionary with nodes [{id, kind, label}] and edges [{source, target, rel, on_path}].
-    Includes the ring members, the order, and any Device/Card/Address shared by >= 2 of them,
+    Includes the ring members, the order, and any Device/Card shared by >= 2 of them (and Address if include_address=True),
     with the edges between them. Marks edges on the evidence path with on_path=True.
     Read-only ro_query only.
     """
@@ -570,12 +599,13 @@ def ring_subgraph(
             add_edge(order_user, order_id, "PLACED", force_on_path=True)
 
         # Check shipping address for order
-        q_ship = "MATCH (o:Order {id: $oid})-[:SHIPPED_TO]->(a:Address) RETURN a.id"
-        r_ship = graph.ro_query(q_ship, {"oid": order_id}).result_set
-        if r_ship and r_ship[0][0]:
-            aid = r_ship[0][0]
-            add_node(aid, "Address")
-            add_edge(order_id, aid, "SHIPPED_TO")
+        if include_address:
+            q_ship = "MATCH (o:Order {id: $oid})-[:SHIPPED_TO]->(a:Address) RETURN a.id"
+            r_ship = graph.ro_query(q_ship, {"oid": order_id}).result_set
+            if r_ship and r_ship[0][0]:
+                aid = r_ship[0][0]
+                add_node(aid, "Address")
+                add_edge(order_id, aid, "SHIPPED_TO")
 
     if uids:
         # 1. Devices shared by >= 2 users
@@ -601,15 +631,16 @@ def ring_subgraph(
             add_edge(uid, cid, rel)
 
         # 3. Addresses shared by >= 2 users
-        q_addr = (
-            "MATCH (u:User)-[:PLACED]->(:Order)-[:SHIPPED_TO]->(a:Address)<-[:SHIPPED_TO]-(:Order)<-[:PLACED]-(v:User) "
-            "WHERE u.id IN $uids AND v.id IN $uids AND u <> v "
-            "RETURN DISTINCT u.id, a.id, 'SHIPPED_TO'"
-        )
-        for r in (graph.ro_query(q_addr, {"uids": uids}).result_set or []):
-            uid, aid, rel = r[0], r[1], r[2]
-            add_node(aid, "Address")
-            add_edge(uid, aid, rel)
+        if include_address:
+            q_addr = (
+                "MATCH (u:User)-[:PLACED]->(:Order)-[:SHIPPED_TO]->(a:Address)<-[:SHIPPED_TO]-(:Order)<-[:PLACED]-(v:User) "
+                "WHERE u.id IN $uids AND v.id IN $uids AND u <> v "
+                "RETURN DISTINCT u.id, a.id, 'SHIPPED_TO'"
+            )
+            for r in (graph.ro_query(q_addr, {"uids": uids}).result_set or []):
+                uid, aid, rel = r[0], r[1], r[2]
+                add_node(aid, "Address")
+                add_edge(uid, aid, rel)
 
     return {
         "nodes": list(nodes.values()),

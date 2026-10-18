@@ -6,6 +6,7 @@ Connects to FalkorDB graph 'fraud' on localhost:6379.
 import datetime
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
+from redis.exceptions import ResponseError
 import db as db_module
 
 def format_display_date(val: Any) -> str:
@@ -84,16 +85,19 @@ def resolve(kind: str, entity_id: str) -> bool:
 
 def _make_unknown_entity_response(tool_name: str, args: Dict[str, Any], start_time: float, message: str) -> Dict[str, Any]:
     elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
+    trace: Dict[str, Any] = {
+        "tool": tool_name,
+        "args": args,
+        "ms": elapsed_ms,
+        "rows": 0,
+    }
+    if tool_name == "explain_path":
+        trace["method"] = args.get("method")
     return {
         "outcome": "unknown_entity",
         "data": {"message": message},
         "evidence": [],
-        "trace": {
-            "tool": tool_name,
-            "args": args,
-            "ms": elapsed_ms,
-            "rows": 0,
-        },
+        "trace": trace,
     }
 
 
@@ -292,13 +296,64 @@ def detect_ring(user_id: str, max_hops: int = 12) -> Dict[str, Any]:
     }
 
 
-def explain_path(user_a: str, user_b: str) -> Dict[str, Any]:
+def _shortest_path(a: str, b: str, method: Optional[str] = None) -> Tuple[Optional[Any], str]:
     """
-    Tool 4: explain_path(user_a, user_b)
+    Find shortest path between User a and User b.
+    First choice: algo.SPpaths with relTypes ['USED_DEVICE', 'PAID_WITH'] and relDirection 'both'.
+    Fallback: MATCH p=(a:User {id:$a})-[:USED_DEVICE|PAID_WITH*1..15]-(b:User {id:$b}) RETURN p ORDER BY length(p) LIMIT 1.
+    Tries the first and falls back to the second on any ResponseError (or when forced via method='fallback').
+    Returns (path_obj, method_name).
+    """
+    if method == "algo.SPpaths":
+        q = (
+            "MATCH (a:User {id:$a}), (b:User {id:$b}) "
+            "CALL algo.SPpaths({sourceNode: a, targetNode: b, relTypes: ['USED_DEVICE', 'PAID_WITH'], relDirection: 'both'}) "
+            "YIELD path "
+            "RETURN path"
+        )
+        res = graph.ro_query(q, {"a": str(a), "b": str(b)})
+        path_obj = res.result_set[0][0] if res.result_set and len(res.result_set[0]) > 0 else None
+        return path_obj, "algo.SPpaths"
+
+    if method == "fallback":
+        q = (
+            "MATCH p=(a:User {id:$a})-[:USED_DEVICE|PAID_WITH*1..15]-(b:User {id:$b}) "
+            "RETURN p ORDER BY length(p) LIMIT 1"
+        )
+        res = graph.ro_query(q, {"a": str(a), "b": str(b)})
+        path_obj = res.result_set[0][0] if res.result_set and len(res.result_set[0]) > 0 else None
+        return path_obj, "fallback"
+
+    # Default / auto: Try first choice, fallback on ResponseError
+    try:
+        q = (
+            "MATCH (a:User {id:$a}), (b:User {id:$b}) "
+            "CALL algo.SPpaths({sourceNode: a, targetNode: b, relTypes: ['USED_DEVICE', 'PAID_WITH'], relDirection: 'both'}) "
+            "YIELD path "
+            "RETURN path"
+        )
+        res = graph.ro_query(q, {"a": str(a), "b": str(b)})
+        path_obj = res.result_set[0][0] if res.result_set and len(res.result_set[0]) > 0 else None
+        return path_obj, "algo.SPpaths"
+    except ResponseError:
+        q = (
+            "MATCH p=(a:User {id:$a})-[:USED_DEVICE|PAID_WITH*1..15]-(b:User {id:$b}) "
+            "RETURN p ORDER BY length(p) LIMIT 1"
+        )
+        res = graph.ro_query(q, {"a": str(a), "b": str(b)})
+        path_obj = res.result_set[0][0] if res.result_set and len(res.result_set[0]) > 0 else None
+        return path_obj, "fallback"
+
+
+def explain_path(user_a: str, user_b: str, method: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Tool 4: explain_path(user_a, user_b, method=None)
     Returns: hops, ordered path nodes, evidence strings, or not_linked.
     """
     start_time = time.perf_counter()
-    args = {"user_a": user_a, "user_b": user_b}
+    args: Dict[str, Any] = {"user_a": user_a, "user_b": user_b}
+    if method is not None:
+        args["method"] = method
 
     if not resolve("user", user_a):
         return _make_unknown_entity_response(
@@ -309,15 +364,8 @@ def explain_path(user_a: str, user_b: str) -> Dict[str, Any]:
             "explain_path", args, start_time, f"User '{user_b}' does not exist in graph."
         )
 
-    q = (
-        "MATCH (a:User {id:$a}),(b:User {id:$b}) "
-        "WITH shortestPath((a)-[:USED_DEVICE|PAID_WITH*..15]-(b)) AS p "
-        "RETURN p"
-    )
-    res = graph.ro_query(q, {"a": str(user_a), "b": str(user_b)})
+    path_obj, method_used = _shortest_path(user_a, user_b, method=method)
     elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
-
-    path_obj = res.result_set[0][0] if res.result_set and len(res.result_set[0]) > 0 else None
 
     if path_obj is None:
         return {
@@ -330,7 +378,13 @@ def explain_path(user_a: str, user_b: str) -> Dict[str, Any]:
                 "message": NOT_LINKED_MSG,
             },
             "evidence": [],
-            "trace": {"tool": "explain_path", "args": args, "ms": elapsed_ms, "rows": 0},
+            "trace": {
+                "tool": "explain_path",
+                "args": args,
+                "ms": elapsed_ms,
+                "rows": 0,
+                "method": method_used,
+            },
         }
 
     nodes = [n.properties.get("id") for n in path_obj.nodes()]
@@ -350,7 +404,13 @@ def explain_path(user_a: str, user_b: str) -> Dict[str, Any]:
         "outcome": "path_found",
         "data": data,
         "evidence": evidence,
-        "trace": {"tool": "explain_path", "args": args, "ms": elapsed_ms, "rows": 1},
+        "trace": {
+            "tool": "explain_path",
+            "args": args,
+            "ms": elapsed_ms,
+            "rows": 1,
+            "method": method_used,
+        },
     }
 
 

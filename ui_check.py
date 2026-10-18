@@ -44,7 +44,7 @@ def stop_port_8000():
         pass
 
 
-def wait_for_server(url="http://127.0.0.1:8000/api/health", timeout=15):
+def wait_for_server(url="http://127.0.0.1:8000/api/health", timeout=25):
     """Poll health endpoint until server is ready."""
     start = time.time()
     while time.time() - start < timeout:
@@ -71,15 +71,12 @@ def run_ui_checks():
 
     server_proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "api:app", "--host", "127.0.0.1", "--port", "8000"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
     )
 
     try:
         if not wait_for_server():
-            stdout, stderr = server_proc.communicate(timeout=2)
-            raise RuntimeError(f"Server failed to start on 127.0.0.1:8000.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
+            server_proc.kill()
+            raise RuntimeError("Server failed to start on 127.0.0.1:8000 within timeout.")
         print("[OK] Server is up and healthy on http://127.0.0.1:8000")
 
         # 2. Launch Playwright

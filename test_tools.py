@@ -2,6 +2,7 @@
 test_tools.py - Plain assert tests for RingWatch tools.py catalogue.
 """
 
+import time
 import db as db_module
 from tools import (
     order_facts,
@@ -143,6 +144,57 @@ def test_order_facts_and_ring_stats():
     print(f"  [PASS] ring_stats(Ring A): orders={stats_a['data']['order_count']}, connecting={stats_a['data']['connecting_entity_kinds']}")
 
 
+def test_shortest_path_methods():
+    print("Testing shortest path methods separately ('algo.SPpaths' and 'fallback')...")
+    methods = ["algo.SPpaths", "fallback"]
+    hops_182 = {}
+    timings = {}
+
+    for m in methods:
+        t0 = time.perf_counter()
+
+        # 1. Assert hops == 12 and 13 path nodes for u193 -> u199
+        res_193 = explain_path("u193", "u199", method=m)
+        assert res_193["outcome"] == "path_found", f"[{m}] Expected path_found, got {res_193['outcome']}"
+        assert res_193["data"]["hops"] == 12, f"[{m}] Expected 12 hops, got {res_193['data']['hops']}"
+        assert len(res_193["data"]["nodes"]) == 13, f"[{m}] Expected 13 nodes, got {len(res_193['data']['nodes'])}"
+        assert res_193["trace"]["method"] == m, f"[{m}] Expected trace method {m}, got {res_193['trace']['method']}"
+
+        # 2. Hop count for u182 -> u187
+        res_182 = explain_path("u182", "u187", method=m)
+        assert res_182["outcome"] == "path_found", f"[{m}] Expected path_found for u182->u187"
+        hops_182[m] = res_182["data"]["hops"]
+        assert res_182["trace"]["method"] == m
+
+        # 3. not_linked for u0 -> u199
+        res_unlinked = explain_path("u0", "u199", method=m)
+        assert res_unlinked["outcome"] == "not_linked", f"[{m}] Expected not_linked for u0->u199, got {res_unlinked['outcome']}"
+        assert res_unlinked["data"]["hops"] is None, f"[{m}] Expected hops None for not_linked"
+        assert res_unlinked["trace"]["method"] == m
+
+        # 4. unknown_entity for u99999
+        res_unknown_a = explain_path("u99999", "u193", method=m)
+        assert res_unknown_a["outcome"] == "unknown_entity", f"[{m}] Expected unknown_entity for u99999"
+
+        res_unknown_b = explain_path("u193", "u99999", method=m)
+        assert res_unknown_b["outcome"] == "unknown_entity", f"[{m}] Expected unknown_entity for u99999"
+
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        timings[m] = elapsed_ms
+        print(f"  [PASS] Method '{m}': u193->u199 (hops=12, nodes=13), u182->u187 (hops={hops_182[m]}), u0->u199 (not_linked), u99999 (unknown_entity)")
+
+    # Assert identical hop count for u182 -> u187
+    assert hops_182["algo.SPpaths"] == hops_182["fallback"], (
+        f"Hop counts differ for u182->u187: algo.SPpaths={hops_182['algo.SPpaths']}, fallback={hops_182['fallback']}"
+    )
+    print(f"  [PASS] Identical hop count ({hops_182['algo.SPpaths']}) for u182 -> u187 across both methods.")
+
+    # Timing report
+    print("  Timing Report:")
+    for m in methods:
+        print(f"    - {m:<15}: {timings[m]:.2f} ms")
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("Running RingWatch Tools Test Suite")
@@ -154,6 +206,7 @@ if __name__ == "__main__":
     test_unknown_ids()
     test_find_rings()
     test_order_facts_and_ring_stats()
+    test_shortest_path_methods()
     print("=" * 70)
     print("ALL TESTS PASSED SUCCESSFULLY!")
     print("=" * 70)

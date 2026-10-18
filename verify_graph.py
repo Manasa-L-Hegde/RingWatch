@@ -4,6 +4,7 @@ Connects to FalkorDB graph "fraud" and runs 7 PASS/FAIL checks + 1 INFO check.
 """
 
 import db as db_module
+import tools
 
 g = db_module.get_db("fraud")
 
@@ -70,30 +71,14 @@ row(5, "Ring B shared card (cB)", actual, str(expected), status)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Check 6 – Ring C shortest path length between u193 and u199
-#            Attempt canonical form; on syntax error fall back to WITH form.
+#            Calls tools.explain_path as single source of truth.
 # ─────────────────────────────────────────────────────────────────────────────
-try:
-    actual = query_scalar(
-        "MATCH (a:User {id:'u193'}), (b:User {id:'u199'}) "
-        "MATCH p = shortestPath((a)-[:USED_DEVICE|PAID_WITH*..15]-(b)) "
-        "RETURN length(p)"
-    )
-    sp_form = "shortestPath() inline"
-except Exception as e1:
-    try:
-        actual = query_scalar(
-            "MATCH (a:User {id:'u193'}), (b:User {id:'u199'}) "
-            "WITH shortestPath((a)-[:USED_DEVICE|PAID_WITH*..15]-(b)) AS p "
-            "RETURN length(p)"
-        )
-        sp_form = "WITH shortestPath() AS p (fallback)"
-    except Exception as e2:
-        actual = None
-        sp_form = f"BOTH FORMS FAILED: {e1} | {e2}"
-
+ep_res = tools.explain_path("u193", "u199")
+actual = ep_res["data"].get("hops") if ep_res.get("outcome") == "path_found" else None
+sp_method = ep_res.get("trace", {}).get("method", "unknown")
 expected = 12
 status = "PASS" if actual == expected else "FAIL"
-row(6, f"Ring C shortest path [{sp_form}]", actual, str(expected), status)
+row(6, f"Ring C shortest path [{sp_method}]", actual, str(expected), status)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Check 7 – Q1 neighbours of order o560's placer
@@ -183,6 +168,7 @@ print()
 print(f"  INFO  WCC: {wcc_note}")
 if wcc_cypher_used:
     print(f"        Call used: {wcc_cypher_used}")
+print(f"  INFO  Check 6 shortest path method used: {sp_method}")
 print()
 
 # Summary

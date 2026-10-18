@@ -129,11 +129,12 @@ RETURN DISTINCT other.id AS member_id
 
 ### 2. Shortest Path Evidence Route (`explain_path` in `tools.py`)
 ```cypher
-MATCH (a:User {id:$a}),(b:User {id:$b})
-WITH shortestPath((a)-[:USED_DEVICE|PAID_WITH*..15]-(b)) AS p
-RETURN p
+MATCH (a:User {id:$a}), (b:User {id:$b})
+CALL algo.SPpaths({sourceNode: a, targetNode: b, relTypes: ['USED_DEVICE', 'PAID_WITH'], relDirection: 'both'})
+YIELD path
+RETURN path
 ```
-> *Why a graph model naturally fits:* Native `shortestPath()` finds and returns the complete, ordered sequence of nodes and edges connecting two entities in a single query, directly supplying visual path evidence to the UI without client-side path stitching.
+> *Why a graph model naturally fits:* `algo.SPpaths` (with variable-length path traversal fallback) finds and returns the complete, ordered sequence of nodes and edges connecting two entities in a single query across both FalkorDB Cloud and local instances, directly supplying visual path evidence to the UI without client-side path stitching.
 
 ### 3. Weakly Connected Components (`find_rings` in `tools.py`)
 ```cypher
@@ -170,7 +171,7 @@ RETURN c.id, c.at, c.order_id, c.verdict, c.confidence, c.status, c.shape,
 ## 5. What Breaks Without FalkorDB
 
 While relational databases can model connected networks using joins and recursive CTEs, what FalkorDB makes concrete and natural is:
-1. **Direct Path Evidence:** Native `shortestPath()` returns the complete, ordered sequence of nodes and edges in a single query; in SQL, reconstructing and ordering the full multi-table path for visual graph rendering requires custom procedural aggregation.
+1. **Direct Path Evidence:** Shortest path procedures (`algo.SPpaths` / path traversal) return the complete, ordered sequence of nodes and edges in a single query; in SQL, reconstructing and ordering the full multi-table path for visual graph rendering requires custom procedural aggregation.
 2. **Built-in Graph Algorithms:** Graph partitioning like Weakly Connected Components (`algo.WCC`) runs directly in-engine across the entire dataset in linear time, without exporting table dumps to external graph processing frameworks.
 3. **Per-Tenant Memory in One Model:** Dynamic episodic memory graphs (`memory_{analyst_id}`) are created and queried on demand as first-class graphs alongside the fraud data, enabling topological overlap recall (`recall_similar`) without multi-tenant table partitioning or complex row-level joins.
 

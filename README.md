@@ -98,42 +98,43 @@ FalkorDB Graph:   [u193] -> dA0 -> [u194] -> dA1 -> [u195] -> dA2 -> [u196] -> d
 
 ```mermaid
 flowchart TD
-    subgraph Frontend ["Frontend (SPA — Cytoscape.js + Tailwind CSS)"]
-        UI["Web UI: Graph Canvas, Live Trace Table, Memory Inspector, Join vs Graph Benchmark"]
+    subgraph Frontend ["Frontend (SPA: Cytoscape.js + Tailwind)"]
+        UI["Web UI: Graph Canvas, Traces, Memory, Benchmark"]
     end
 
     subgraph Backend ["FastAPI Backend (api.py)"]
-        API["REST Endpoints (/api/investigate, /api/health, /api/memory, /api/rings)"]
-        RateLimit["Rate Limiter & Input Validator (analyst ID, order ID)"]
+        API["REST Endpoints (/api/investigate, /api/health, /api/memory)"]
+        RateLimit["Rate Limiter & Input Validator"]
     end
 
     subgraph AgentLoop ["Agent Investigation Loop (agent.py)"]
-        MemoryShortCircuit{"Confirmed Past Case Overlap >= 3?"}
-        LLM["Google Gemini Flash Lite (Typed Tool Selection)"]
-        Safeguard["Answer Checker (accepts() Exact Id Validator)"]
+        MemoryShortCircuit{"Confirmed Past Case Overlap 3 or More?"}
+        LLM["Google Gemini Flash Lite (Tool Selection)"]
+        Safeguard["Answer Checker (Token Validator)"]
         Fallback["Deterministic Pipeline & Template Engine"]
         VerdictEngine["Rule-Based Verdict Engine (verdict.py)"]
     end
 
     subgraph ToolCatalogue ["Safe Tool Catalogue (tools.py)"]
-        Tools["order_facts\nfind_linked_accounts\ndetect_ring\nexplain_path\nring_stats\nfind_rings"]
+        Tools["order_facts<br/>find_linked_accounts<br/>detect_ring<br/>explain_path<br/>ring_stats<br/>find_rings"]
     end
 
-    subgraph FalkorDB ["FalkorDB Graph Database Engine"]
-        FraudGraph[("Graph: fraud\nTransactional Data (Read-Only)")]
-        MemoryGraphs[("Graph: memory_{analyst_id}\nTenant-Isolated Episodic Memory")]
+    subgraph FalkorDB ["FalkorDB Graph Engine"]
+        FraudGraph[("Graph: fraud<br/>Transactional Data")]
+        MemoryGraphs[("Graph: memory_analyst<br/>Episodic Memory")]
     end
 
     UI <--> API
-    API --> RateLimit --> AgentLoop
+    API --> RateLimit
+    RateLimit --> AgentLoop
     AgentLoop --> MemoryShortCircuit
-    MemoryShortCircuit -- Yes (Short-Circuit) --> VerdictEngine
-    MemoryShortCircuit -- No (Cold Investigation) --> LLM
+    MemoryShortCircuit -->|Yes: Short-Circuit| VerdictEngine
+    MemoryShortCircuit -->|No: Cold Investigation| LLM
     LLM --> Tools
     Tools --> FraudGraph
     LLM --> Safeguard
-    Safeguard -- Rejected --> Fallback
-    Safeguard -- Accepted --> VerdictEngine
+    Safeguard -->|Rejected| Fallback
+    Safeguard -->|Accepted| VerdictEngine
     Fallback --> VerdictEngine
     VerdictEngine --> MemoryGraphs
     VerdictEngine --> API
@@ -150,11 +151,11 @@ flowchart TD
 
 ### 1. Transactional Fraud Graph (`fraud`)
 ```mermaid
-graph LR
-    User((:User)) -->|:PLACED| Order((:Order))
-    Order -->|:SHIPPED_TO| Address((:Address))
-    User -->|:USED_DEVICE| Device((:Device))
-    User -->|:PAID_WITH| Card((:Card))
+flowchart LR
+    User["User"] -->|PLACED| Order["Order"]
+    Order -->|SHIPPED_TO| Address["Address"]
+    User -->|USED_DEVICE| Device["Device"]
+    User -->|PAID_WITH| Card["Card"]
 ```
 
 - **`:User`**: `id` (e.g. `u184`), `name`
@@ -167,10 +168,10 @@ graph LR
 Each human analyst or tenant has a completely isolated graph namespace. Feedbacks, custom pattern notes, and investigation histories never mix between analysts:
 
 ```mermaid
-graph TD
-    Case((:Case)) -->|:INVOLVES| Entity((:Entity))
-    Case -->|:MATCHES| Pattern((:Pattern))
-    Meta((:Meta))
+flowchart TD
+    Case["Case"] -->|INVOLVES| Entity["Entity"]
+    Case -->|MATCHES| Pattern["Pattern"]
+    Meta["Meta"]
 ```
 
 - **`:Case`**: `id` (UUID), `at` (ISO timestamp), `order_id`, `verdict`, `confidence`, `status` (`pending` | `confirmed` | `rejected`), `shape`
